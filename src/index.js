@@ -8,6 +8,7 @@ const {
   handleParcelas, handleInsights, handlePerguntaLivre
 } = require('./handlers/consultaHandler');
 const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
+const { handleDashboard } = require('./handlers/dashboardHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 
@@ -55,20 +56,22 @@ bot.help(async (ctx) => {
     `/resumo - semana atual\n` +
     `/mes - fechamento do mes\n` +
     `/parcelas - parcelamentos ativos\n` +
-    `/insights - Cuzco analisa seus padroes\n\n` +
+    `/insights - Cuzco analisa seus padroes\n` +
+    `/dashboard - seu painel financeiro completo\n\n` +
     `Perguntas naturais:\n` +
     `"Quanto gastei com delivery esse mes?"\n` +
     `"Qual foi meu maior gasto essa semana?"`
   );
 });
 
-// Comandos de consulta
-bot.command('ping',     (ctx) => ctx.reply('🦙 Duartly online!'));
-bot.command('hoje',     handleHoje);
-bot.command('resumo',   handleResumo);
-bot.command('mes',      handleMes);
-bot.command('parcelas', handleParcelas);
-bot.command('insights', handleInsights);
+// Comandos
+bot.command('ping',      (ctx) => ctx.reply('🦙 Duartly online!'));
+bot.command('hoje',      handleHoje);
+bot.command('resumo',    handleResumo);
+bot.command('mes',       handleMes);
+bot.command('parcelas',  handleParcelas);
+bot.command('insights',  handleInsights);
+bot.command('dashboard', handleDashboard);
 
 // ============================================================
 // ROTEADOR INTELIGENTE
@@ -97,7 +100,6 @@ Regras:
     const json = JSON.parse(resultado.response.text().replace(/```json|```/g, '').trim());
 
     if (json.intencao === 'gasto') {
-      // Classificar com Gemini
       const msg = await ctx.reply('🦙 Analisando...');
       const classificacao = await classificarGasto(texto);
 
@@ -184,13 +186,11 @@ Nome: ${nome}
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
 
-  // Desfazer transação
   if (data.startsWith('desfazer_')) {
     await handleDesfazer(ctx);
     return;
   }
 
-  // Fluxo de cartão
   if (
     data.startsWith('cartao_') ||
     data.startsWith('venc_') ||
