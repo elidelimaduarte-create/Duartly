@@ -3,41 +3,45 @@ const { Telegraf } = require('telegraf');
 const { obterOuCriarUsuario } = require('./services/usuarioService');
 const { iniciarHealthCheck } = require('./healthcheck');
 const { handleFoto, handleVoz, handleDesfazer } = require('./handlers/mensagemHandler');
-const {
-  handleHoje, handleResumo, handleMes,
-  handleParcelas, handleInsights, handlePerguntaLivre
-} = require('./handlers/consultaHandler');
+const { handleHoje, handleResumo, handleMes, handleParcelas, handleInsights, handlePerguntaLivre } = require('./handlers/consultaHandler');
 const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
 const { handleDashboard } = require('./handlers/dashboardHandler');
 const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
-const { handleRelatorio } = require('./handlers/relatorioHandler');
 const { handleAgente, handleCallbackAgente, handleTextoAgente } = require('./handlers/agenteCustomHandler');
+const { handleRelatorio } = require('./handlers/relatorioHandler');
+const { middlewareAcesso, handleAssinar, handleConvite, handleStartComConvite, handleStartNormal } = require('./handlers/acessoHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
+const { verificarExpiracoes } = require('./services/assinaturaService');
+const cron = require('node-cron');
 
 iniciarHealthCheck();
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// Middleware: registra usuário
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   try {
     ctx.usuario = await obterOuCriarUsuario(ctx);
   } catch (err) {
-    console.error('Erro no middleware de usuário:', err);
+    console.error('Erro no middleware:', err);
   }
   return next();
 });
 
+// Middleware: controle de acesso
+bot.use(middlewareAcesso);
+
+// /start — com ou sem código de convite
 bot.start(async (ctx) => {
-  const nome = ctx.from.first_name || 'amigo';
-  await ctx.reply(
-    `🦙 Ola, ${nome}! Sou o Duartly, sua lhama financeira pessoal.\n\n` +
-    `Me conta um gasto e eu ja registro pra voce:\n\n` +
-    `Exemplos:\n- "Padaria 18,50"\n- "Nike 350 em 3x"\n- "iFood 45"\n\n` +
-    `Ou manda foto do cupom ou audio!\n\nDigite /ajuda para ver tudo! 🦙`
-  );
+  const payload = ctx.startPayload; // código de convite passado via ?start=CODIGO
+  if (payload && payload.length > 3) {
+    await handleStartComConvite(ctx, payload.toUpperCase());
+  } else {
+    await handleStartNormal(ctx);
+  }
 });
 
 bot.help(async (ctx) => {
@@ -45,12 +49,15 @@ bot.help(async (ctx) => {
     `🦙 O que eu sei fazer:\n\n` +
     `Registrar gastos:\n"Almoco 35", "Uber 22", "Nike 300 em 3x"\n\n` +
     `Consultas:\n/hoje /resumo /mes /parcelas /insights /dashboard\n\n` +
+    `Relatorio:\n/relatorio - PDF completo do mes\n\n` +
     `Metas:\n/meta - definir meta\n/metas - ver progresso\n\n` +
     `Agentes customizados:\n/agente - criar e gerenciar\n\n` +
+    `Conta:\n/assinar - ver planos\n/convite - seu codigo de indicacao\n\n` +
     `Agentes autonomos:\n🦙 /cuzco 🌙 /luna ☀️ /inti`
   );
 });
 
+// Comandos
 bot.command('ping',      (ctx) => ctx.reply('🦙 Duartly online!'));
 bot.command('hoje',      handleHoje);
 bot.command('resumo',    handleResumo);
@@ -62,11 +69,14 @@ bot.command('meta',      handleDefinirMeta);
 bot.command('metas',     handleVerMetas);
 bot.command('agente',    handleAgente);
 bot.command('relatorio', handleRelatorio);
+bot.command('assinar',   handleAssinar);
+bot.command('convite',   handleConvite);
 
 bot.command('cuzco', async (ctx) => { await ctx.reply('🦙 Chamando o Cuzco...'); await executarCuzco(bot); });
 bot.command('luna',  async (ctx) => { await ctx.reply('🌙 Chamando a Luna...'); await executarLuna(bot); });
 bot.command('inti',  async (ctx) => { await ctx.reply('☀️ Chamando o Inti...'); await executarInti(bot); });
 
+// Roteador
 bot.on('text', async (ctx) => {
   const texto = ctx.message.text;
   const usuarioId = ctx.usuario.id;
@@ -75,10 +85,10 @@ bot.on('text', async (ctx) => {
   if (await handleTextoAgente(ctx)) return;
   if (await handleTextoCartao(ctx)) return;
 
-  const prompt = `Analise a mensagem e responda APENAS com JSON valido, sem markdown.
+  const prompt = `Analise a mensagem e responda APENAS com JSON valido.
 Mensagem: "${texto}"
 { "intencao": "gasto" | "consulta" | "conversa" }
-- "gasto": menciona valor, compra, pagamento, despesa ou receita
+- "gasto": valor, compra, pagamento, despesa, receita
 - "consulta": pergunta sobre financas, gastos, historico
 - "conversa": qualquer outra coisa`;
 
@@ -122,7 +132,10 @@ Mensagem: "${texto}"
     } else if (json.intencao === 'consulta') {
       await handlePerguntaLivre(ctx, texto);
     } else {
-      await handleConversa(ctx, texto);
+      const nome = ctx.from.first_name || 'amigo';
+      const prompt2 = `Voce e o Duartly, lhama financeira brasileira bem-humorada. Max 2 frases. Sem markdown. Sempre redirecione para o app financeiro. Mensagem: "${texto}" Nome: ${nome}`;
+      const r = await modeloConversa.generateContent(prompt2);
+      await ctx.reply(r.response.text().trim());
     }
   } catch (err) {
     console.error('Erro no roteador:', err);
@@ -130,25 +143,13 @@ Mensagem: "${texto}"
   }
 });
 
-async function handleConversa(ctx, texto) {
-  const nome = ctx.from.first_name || 'amigo';
-  const prompt = `Voce e o Duartly, lhama financeira brasileira bem-humorada.
-Responda em NO MAXIMO 2 frases. Sem asteriscos ou markdown.
-REGRA: sempre termine redirecionando pro app financeiro.
-Mensagem: "${texto}" | Nome: ${nome}`;
-  try {
-    const resultado = await modeloConversa.generateContent(prompt);
-    await ctx.reply(resultado.response.text().trim());
-  } catch (err) {
-    await ctx.reply('🦙 Haha! Me manda um gasto ou use /hoje!');
-  }
-}
-
+// Callbacks
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
   if (data.startsWith('desfazer_'))  { await handleDesfazer(ctx); return; }
   if (data.startsWith('meta_'))      { await handleCallbackMeta(ctx); return; }
   if (data.startsWith('ac_'))        { await handleCallbackAgente(ctx); return; }
+  if (data === 'usar_convite')       { await ctx.answerCbQuery(); await ctx.reply('Digite seu codigo de convite:'); return; }
   if (data.startsWith('cartao_') || data.startsWith('venc_') || data.startsWith('parcela_') || data.startsWith('nome_')) {
     await handleCallbackCartao(ctx); return;
   }
@@ -166,9 +167,15 @@ bot.launch()
   .then(() => {
     console.log('🦙 Duartly v2 rodando!');
     iniciarAgentes(bot);
+
+    // Verificar expirações todo dia às 10h
+    cron.schedule('0 10 * * *', () => {
+      console.log('Verificando expiracoes...');
+      verificarExpiracoes(bot);
+    }, { timezone: 'America/Sao_Paulo' });
   })
   .catch((err) => {
-    console.error('Erro ao iniciar bot:', err);
+    console.error('Erro ao iniciar:', err);
     process.exit(1);
   });
 
