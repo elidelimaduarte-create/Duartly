@@ -206,5 +206,7 @@ module.exports = {
   handleAssinar,
   handleConvite,
   handleStartComConvite,
-  handleStartNormal
+  handleStartNormal,
+  handleCancelar,
+  handleCallbackCancelamento
 };
