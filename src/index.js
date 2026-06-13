@@ -9,6 +9,7 @@ const {
 } = require('./handlers/consultaHandler');
 const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
 const { handleDashboard } = require('./handlers/dashboardHandler');
+const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
@@ -59,6 +60,9 @@ bot.help(async (ctx) => {
     `/parcelas - parcelamentos ativos\n` +
     `/insights - Cuzco analisa seus padroes\n` +
     `/dashboard - seu painel financeiro completo\n\n` +
+    `Metas:\n` +
+    `/meta - definir meta mensal\n` +
+    `/metas - ver todas as metas\n\n` +
     `Agentes autonomos:\n` +
     `🦙 Cuzco - alerta diario as 20h\n` +
     `🌙 Luna - analise quinzenal\n` +
@@ -77,18 +81,18 @@ bot.command('mes',       handleMes);
 bot.command('parcelas',  handleParcelas);
 bot.command('insights',  handleInsights);
 bot.command('dashboard', handleDashboard);
+bot.command('meta',      handleDefinirMeta);
+bot.command('metas',     handleVerMetas);
 
-// Chamar agentes manualmente
+// Agentes manuais
 bot.command('cuzco', async (ctx) => {
   await ctx.reply('🦙 Chamando o Cuzco...');
   await executarCuzco(bot);
 });
-
 bot.command('luna', async (ctx) => {
   await ctx.reply('🌙 Chamando a Luna...');
   await executarLuna(bot);
 });
-
 bot.command('inti', async (ctx) => {
   await ctx.reply('☀️ Chamando o Inti...');
   await executarInti(bot);
@@ -101,9 +105,15 @@ bot.on('text', async (ctx) => {
   const texto = ctx.message.text;
   const usuarioId = ctx.usuario.id;
 
-  const interceptado = await handleTextoCartao(ctx);
-  if (interceptado) return;
+  // 1. Fluxo de meta
+  const interceptadoMeta = await handleTextoMeta(ctx);
+  if (interceptadoMeta) return;
 
+  // 2. Fluxo de cartão
+  const interceptadoCartao = await handleTextoCartao(ctx);
+  if (interceptadoCartao) return;
+
+  // 3. Rotear com Gemini
   const prompt = `
 Analise a mensagem e responda APENAS com JSON valido, sem markdown.
 Mensagem: "${texto}"
@@ -204,6 +214,11 @@ bot.on('callback_query', async (ctx) => {
 
   if (data.startsWith('desfazer_')) {
     await handleDesfazer(ctx);
+    return;
+  }
+
+  if (data.startsWith('meta_')) {
+    await handleCallbackMeta(ctx);
     return;
   }
 
