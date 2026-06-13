@@ -10,6 +10,7 @@ const {
 const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
 const { handleDashboard } = require('./handlers/dashboardHandler');
 const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
+const { handleAgente, handleCallbackAgente, handleTextoAgente } = require('./handlers/agenteCustomHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
@@ -18,7 +19,6 @@ iniciarHealthCheck();
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Middleware: registra usuário
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   try {
@@ -29,51 +29,27 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// /start
 bot.start(async (ctx) => {
   const nome = ctx.from.first_name || 'amigo';
   await ctx.reply(
     `🦙 Ola, ${nome}! Sou o Duartly, sua lhama financeira pessoal.\n\n` +
     `Me conta um gasto e eu ja registro pra voce:\n\n` +
-    `Exemplos:\n` +
-    `- "Padaria 18,50"\n` +
-    `- "Nike 350 em 3x no credito"\n` +
-    `- "iFood 45"\n\n` +
-    `Ou manda uma foto do cupom ou audio!\n\n` +
-    `Digite /ajuda para ver tudo que sei fazer! 🦙`
+    `Exemplos:\n- "Padaria 18,50"\n- "Nike 350 em 3x"\n- "iFood 45"\n\n` +
+    `Ou manda foto do cupom ou audio!\n\nDigite /ajuda para ver tudo! 🦙`
   );
 });
 
-// /ajuda
 bot.help(async (ctx) => {
   await ctx.reply(
     `🦙 O que eu sei fazer:\n\n` +
-    `Registrar gastos - so falar natural:\n` +
-    `"Almoco 35", "Uber 22", "Nike 300 em 3x"\n\n` +
-    `Ou manda:\n` +
-    `Foto do cupom -> leio e registro\n` +
-    `Audio -> transcrevo e registro\n\n` +
-    `Consultas:\n` +
-    `/hoje - gastos do dia\n` +
-    `/resumo - semana atual\n` +
-    `/mes - fechamento do mes\n` +
-    `/parcelas - parcelamentos ativos\n` +
-    `/insights - Cuzco analisa seus padroes\n` +
-    `/dashboard - seu painel financeiro completo\n\n` +
-    `Metas:\n` +
-    `/meta - definir meta mensal\n` +
-    `/metas - ver todas as metas\n\n` +
-    `Agentes autonomos:\n` +
-    `🦙 Cuzco - alerta diario as 20h\n` +
-    `🌙 Luna - analise quinzenal\n` +
-    `☀️ Inti - panorama mensal\n\n` +
-    `Perguntas naturais:\n` +
-    `"Quanto gastei com delivery esse mes?"\n` +
-    `"Qual foi meu maior gasto essa semana?"`
+    `Registrar gastos:\n"Almoco 35", "Uber 22", "Nike 300 em 3x"\n\n` +
+    `Consultas:\n/hoje /resumo /mes /parcelas /insights /dashboard\n\n` +
+    `Metas:\n/meta - definir meta\n/metas - ver progresso\n\n` +
+    `Agentes customizados:\n/agente - criar e gerenciar\n\n` +
+    `Agentes autonomos:\n🦙 /cuzco 🌙 /luna ☀️ /inti`
   );
 });
 
-// Comandos
 bot.command('ping',      (ctx) => ctx.reply('🦙 Duartly online!'));
 bot.command('hoje',      handleHoje);
 bot.command('resumo',    handleResumo);
@@ -83,46 +59,26 @@ bot.command('insights',  handleInsights);
 bot.command('dashboard', handleDashboard);
 bot.command('meta',      handleDefinirMeta);
 bot.command('metas',     handleVerMetas);
+bot.command('agente',    handleAgente);
 
-// Agentes manuais
-bot.command('cuzco', async (ctx) => {
-  await ctx.reply('🦙 Chamando o Cuzco...');
-  await executarCuzco(bot);
-});
-bot.command('luna', async (ctx) => {
-  await ctx.reply('🌙 Chamando a Luna...');
-  await executarLuna(bot);
-});
-bot.command('inti', async (ctx) => {
-  await ctx.reply('☀️ Chamando o Inti...');
-  await executarInti(bot);
-});
+bot.command('cuzco', async (ctx) => { await ctx.reply('🦙 Chamando o Cuzco...'); await executarCuzco(bot); });
+bot.command('luna',  async (ctx) => { await ctx.reply('🌙 Chamando a Luna...'); await executarLuna(bot); });
+bot.command('inti',  async (ctx) => { await ctx.reply('☀️ Chamando o Inti...'); await executarInti(bot); });
 
-// ============================================================
-// ROTEADOR INTELIGENTE
-// ============================================================
 bot.on('text', async (ctx) => {
   const texto = ctx.message.text;
   const usuarioId = ctx.usuario.id;
 
-  // 1. Fluxo de meta
-  const interceptadoMeta = await handleTextoMeta(ctx);
-  if (interceptadoMeta) return;
+  if (await handleTextoMeta(ctx)) return;
+  if (await handleTextoAgente(ctx)) return;
+  if (await handleTextoCartao(ctx)) return;
 
-  // 2. Fluxo de cartão
-  const interceptadoCartao = await handleTextoCartao(ctx);
-  if (interceptadoCartao) return;
-
-  // 3. Rotear com Gemini
-  const prompt = `
-Analise a mensagem e responda APENAS com JSON valido, sem markdown.
+  const prompt = `Analise a mensagem e responda APENAS com JSON valido, sem markdown.
 Mensagem: "${texto}"
 { "intencao": "gasto" | "consulta" | "conversa" }
-Regras:
 - "gasto": menciona valor, compra, pagamento, despesa ou receita
-- "consulta": pergunta sobre financas, gastos, historico, relatorio
-- "conversa": qualquer outra coisa
-`;
+- "consulta": pergunta sobre financas, gastos, historico
+- "conversa": qualquer outra coisa`;
 
   try {
     const resultado = await modeloConversa.generateContent(prompt);
@@ -133,10 +89,8 @@ Regras:
       const classificacao = await classificarGasto(texto);
 
       if (!classificacao || !classificacao.valor) {
-        await ctx.telegram.editMessageText(
-          ctx.chat.id, msg.message_id, null,
-          `🦙 Nao consegui identificar um gasto.\n\nTenta assim:\n- "Padaria 18,50"\n- "Uber 22"\n- "Nike 300 em 3x"`
-        );
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null,
+          `🦙 Nao consegui identificar um gasto.\n\nTenta: "Padaria 18,50" ou "Uber 22"`);
         return;
       }
 
@@ -153,27 +107,15 @@ Regras:
 
       const emoji = classificacao.tipo === 'receita' ? '💵' : '💸';
       const sinal = classificacao.tipo === 'receita' ? '+' : '-';
-      let resposta =
-        `${emoji} ${classificacao.descricao}\n` +
-        `💰 ${sinal}R$ ${classificacao.valor.toFixed(2)}\n` +
-        `🏷️ ${classificacao.categoria}\n` +
-        `✅ Registrado!`;
+      let resposta = `${emoji} ${classificacao.descricao}\n💰 ${sinal}R$ ${classificacao.valor.toFixed(2)}\n🏷️ ${classificacao.categoria}\n✅ Registrado!`;
 
       if (alertaMeta) {
-        resposta += `\n\n⚠️ Atencao! Voce ja usou ${alertaMeta.percentual}% da sua meta de ${classificacao.categoria}!`;
+        resposta += `\n\n⚠️ Voce ja usou ${alertaMeta.percentual}% da meta de ${classificacao.categoria}!`;
       }
 
-      await ctx.telegram.editMessageText(
-        ctx.chat.id, msg.message_id, null,
-        resposta,
-        {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: '↩️ Desfazer', callback_data: `desfazer_${transacao.id}` }
-            ]]
-          }
-        }
-      );
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, resposta, {
+        reply_markup: { inline_keyboard: [[{ text: '↩️ Desfazer', callback_data: `desfazer_${transacao.id}` }]] }
+      });
 
     } else if (json.intencao === 'consulta') {
       await handlePerguntaLivre(ctx, texto);
@@ -186,61 +128,36 @@ Regras:
   }
 });
 
-// ============================================================
-// CONVERSA CASUAL
-// ============================================================
 async function handleConversa(ctx, texto) {
   const nome = ctx.from.first_name || 'amigo';
-  const prompt = `
-Voce e o Duartly, uma lhama financeira brasileira bem-humorada e direta.
-Responda em NO MAXIMO 2 frases curtas. Sem asteriscos ou markdown.
-REGRA: sempre termine redirecionando pro proposito financeiro do app.
-Mensagem: "${texto}"
-Nome: ${nome}
-`;
+  const prompt = `Voce e o Duartly, lhama financeira brasileira bem-humorada.
+Responda em NO MAXIMO 2 frases. Sem asteriscos ou markdown.
+REGRA: sempre termine redirecionando pro app financeiro.
+Mensagem: "${texto}" | Nome: ${nome}`;
   try {
     const resultado = await modeloConversa.generateContent(prompt);
     await ctx.reply(resultado.response.text().trim());
   } catch (err) {
-    await ctx.reply('🦙 Haha! Mas vamos ao que interessa — me manda um gasto ou use /hoje!');
+    await ctx.reply('🦙 Haha! Me manda um gasto ou use /hoje!');
   }
 }
 
-// ============================================================
-// CALLBACKS
-// ============================================================
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
-
-  if (data.startsWith('desfazer_')) {
-    await handleDesfazer(ctx);
-    return;
-  }
-
-  if (data.startsWith('meta_')) {
-    await handleCallbackMeta(ctx);
-    return;
-  }
-
-  if (
-    data.startsWith('cartao_') ||
-    data.startsWith('venc_') ||
-    data.startsWith('parcela_') ||
-    data.startsWith('nome_')
-  ) {
-    await handleCallbackCartao(ctx);
-    return;
+  if (data.startsWith('desfazer_'))  { await handleDesfazer(ctx); return; }
+  if (data.startsWith('meta_'))      { await handleCallbackMeta(ctx); return; }
+  if (data.startsWith('ac_'))        { await handleCallbackAgente(ctx); return; }
+  if (data.startsWith('cartao_') || data.startsWith('venc_') || data.startsWith('parcela_') || data.startsWith('nome_')) {
+    await handleCallbackCartao(ctx); return;
   }
 });
 
-// Foto e voz
 bot.on('photo', handleFoto);
 bot.on('voice', handleVoz);
 
-// Erros
 bot.catch((err, ctx) => {
   console.error('Erro no bot:', err);
-  ctx.reply('🦙 Ops! Algo deu errado. Tenta de novo!').catch(() => {});
+  ctx.reply('🦙 Ops! Tenta de novo!').catch(() => {});
 });
 
 bot.launch()
