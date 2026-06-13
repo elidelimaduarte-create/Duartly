@@ -265,6 +265,12 @@ function iniciarAgentes(bot) {
 
   // Inti — todo dia 1 às 9h
   cron.schedule('0 9 1 * *', () => {
+
+  // Agentes customizados — todo hora cheia
+  cron.schedule("0 * * * *", () => {
+    console.log("🤖 Verificando agentes customizados...");
+    executarAgentesCustomizados(bot);
+  }, { timezone: "America/Sao_Paulo" });
     console.log('☀️ Inti iniciando panorama mensal...');
     executarInti(bot);
   }, { timezone: 'America/Sao_Paulo' });
@@ -276,5 +282,6 @@ module.exports = {
   iniciarAgentes,
   executarCuzco,
   executarLuna,
-  executarInti
+  executarInti,
+  executarAgentesCustomizados
 };
