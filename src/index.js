@@ -10,6 +10,7 @@ const {
 const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
 const { handleDashboard } = require('./handlers/dashboardHandler');
 const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
+const { handleRelatorio } = require('./handlers/relatorioHandler');
 const { handleAgente, handleCallbackAgente, handleTextoAgente } = require('./handlers/agenteCustomHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
@@ -60,6 +61,7 @@ bot.command('dashboard', handleDashboard);
 bot.command('meta',      handleDefinirMeta);
 bot.command('metas',     handleVerMetas);
 bot.command('agente',    handleAgente);
+bot.command('relatorio', handleRelatorio);
 
 bot.command('cuzco', async (ctx) => { await ctx.reply('🦙 Chamando o Cuzco...'); await executarCuzco(bot); });
 bot.command('luna',  async (ctx) => { await ctx.reply('🌙 Chamando a Luna...'); await executarLuna(bot); });
