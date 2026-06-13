@@ -5,7 +5,6 @@ const supabase = require('../config/supabase');
 // /meta — Iniciar fluxo de definição de meta
 // ============================================================
 async function handleDefinirMeta(ctx) {
-  // Buscar categorias disponíveis
   const { data: categorias } = await supabase
     .from('categorias')
     .select('id, nome, emoji')
@@ -18,7 +17,6 @@ async function handleDefinirMeta(ctx) {
     return;
   }
 
-  // Montar botões de categorias (3 por linha)
   const botoes = [];
   for (let i = 0; i < categorias.length; i += 3) {
     const linha = categorias.slice(i, i + 3).map(c => ({
@@ -30,14 +28,12 @@ async function handleDefinirMeta(ctx) {
 
   await ctx.reply(
     `🎯 Definir meta mensal\n\nEscolha a categoria:`,
-    {
-      reply_markup: { inline_keyboard: botoes }
-    }
+    { reply_markup: { inline_keyboard: botoes } }
   );
 }
 
 // ============================================================
-// /metas — Ver todas as metas do mês
+// /metas — Ver todas as metas com visual melhorado
 // ============================================================
 async function handleVerMetas(ctx) {
   const usuarioId = ctx.usuario.id;
@@ -66,7 +62,6 @@ async function handleVerMetas(ctx) {
     return;
   }
 
-  // Buscar gastos do mês por categoria
   const inicioMes = `${ano}-${String(mes).padStart(2, '0')}-01`;
   const fimMes = new Date(ano, mes, 0).toISOString().split('T')[0];
 
@@ -79,7 +74,6 @@ async function handleVerMetas(ctx) {
     .gte('data_transacao', inicioMes)
     .lte('data_transacao', fimMes);
 
-  // Somar gastos por categoria
   const gastosPorCategoria = {};
   gastos?.forEach(t => {
     if (!gastosPorCategoria[t.categoria_id]) gastosPorCategoria[t.categoria_id] = 0;
@@ -87,29 +81,70 @@ async function handleVerMetas(ctx) {
   });
 
   const nomeMes = agora.toLocaleString('pt-BR', { month: 'long' });
-  let resposta = `🎯 Metas de ${nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1)}\n\n`;
+  const nomeFormatado = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
 
-  metas.forEach(meta => {
+  let resposta = `🎯 Metas de ${nomeFormatado} ${ano}\n`;
+  resposta += `${'─'.repeat(28)}\n\n`;
+
+  // Ordenar: estouradas primeiro, depois por percentual
+  const metasOrdenadas = [...metas].sort((a, b) => {
+    const pctA = (gastosPorCategoria[a.categoria_id] || 0) / parseFloat(a.valor_limite);
+    const pctB = (gastosPorCategoria[b.categoria_id] || 0) / parseFloat(b.valor_limite);
+    return pctB - pctA;
+  });
+
+  metasOrdenadas.forEach(meta => {
     const gasto = gastosPorCategoria[meta.categoria_id] || 0;
     const limite = parseFloat(meta.valor_limite);
-    const percentual = Math.round((gasto / limite) * 100);
+    const percentual = Math.min(Math.round((gasto / limite) * 100), 100);
     const emoji = meta.categorias?.emoji || '📌';
     const nome = meta.categorias?.nome || 'Outros';
+    const restante = Math.max(limite - gasto, 0);
 
-    // Barra de progresso
-    const barraTotal = 10;
-    const barraPreenchida = Math.min(Math.round((percentual / 100) * barraTotal), barraTotal);
-    const barra = '█'.repeat(barraPreenchida) + '░'.repeat(barraTotal - barraPreenchida);
+    // Status visual
+    let statusEmoji = '🟢';
+    let statusTexto = 'No controle';
+    if (percentual >= 100) {
+      statusEmoji = '🔴';
+      statusTexto = 'Meta estourada!';
+    } else if (percentual >= 80) {
+      statusEmoji = '🟡';
+      statusTexto = 'Quase no limite';
+    } else if (percentual >= 50) {
+      statusEmoji = '🟠';
+      statusTexto = 'Metade usada';
+    }
 
-    // Status
-    let status = '✅';
-    if (percentual >= 100) status = '🚨';
-    else if (percentual >= 80) status = '⚠️';
+    // Barra de progresso com emojis universais
+    const totalBlocos = 10;
+    const blocosPreenchidos = Math.round((percentual / 100) * totalBlocos);
+    let corBloco = '🟩';
+    if (percentual >= 100) corBloco = '🟥';
+    else if (percentual >= 80) corBloco = '🟨';
+    else if (percentual >= 50) corBloco = '🟧';
+    const barra = corBloco.repeat(blocosPreenchidos) + '⬜'.repeat(totalBlocos - blocosPreenchidos);
 
-    resposta += `${status} ${emoji} ${nome}\n`;
+    resposta += `${statusEmoji} ${emoji} ${nome}\n`;
     resposta += `${barra} ${percentual}%\n`;
-    resposta += `R$ ${gasto.toFixed(2)} de R$ ${limite.toFixed(2)}\n\n`;
+    resposta += `💸 R$ ${gasto.toFixed(2)} / R$ ${limite.toFixed(2)}\n`;
+
+    if (percentual >= 100) {
+      const excesso = gasto - limite;
+      resposta += `⚠️ Excedeu R$ ${excesso.toFixed(2)}!\n`;
+    } else {
+      resposta += `✅ Faltam R$ ${restante.toFixed(2)}\n`;
+    }
+
+    resposta += `📌 ${statusTexto}\n\n`;
   });
+
+  // Resumo geral
+  const totalLimite = metas.reduce((a, m) => a + parseFloat(m.valor_limite), 0);
+  const totalGasto = metas.reduce((a, m) => a + (gastosPorCategoria[m.categoria_id] || 0), 0);
+  const pctGeral = Math.round((totalGasto / totalLimite) * 100);
+
+  resposta += `${'─'.repeat(28)}\n`;
+  resposta += `📊 Total: R$ ${totalGasto.toFixed(2)} de R$ ${totalLimite.toFixed(2)} (${pctGeral}%)`;
 
   await ctx.reply(resposta, {
     reply_markup: {
@@ -121,7 +156,7 @@ async function handleVerMetas(ctx) {
 }
 
 // ============================================================
-// CALLBACK: escolha de categoria e valor
+// CALLBACKS
 // ============================================================
 const sessoesMeta = new Map();
 
@@ -131,17 +166,14 @@ async function handleCallbackMeta(ctx) {
 
   await ctx.answerCbQuery();
 
-  // Botão "Criar meta" no /metas
   if (data === 'meta_criar') {
     await handleDefinirMeta(ctx);
     return;
   }
 
-  // Escolheu categoria
   if (data.startsWith('meta_cat_')) {
     const categoriaId = data.replace('meta_cat_', '');
 
-    // Buscar nome da categoria
     const { data: cat } = await supabase
       .from('categorias')
       .select('nome, emoji')
@@ -151,11 +183,15 @@ async function handleCallbackMeta(ctx) {
     sessoesMeta.set(String(usuarioId), {
       categoriaId,
       etapa: 'aguardando_valor',
+      nomeCategoria: cat?.nome || 'Categoria',
+      emojiCategoria: cat?.emoji || '🎯',
       timestamp: Date.now()
     });
 
     await ctx.reply(
-      `${cat?.emoji || '🎯'} Meta para ${cat?.nome || 'categoria'}\n\nQual o limite mensal em reais?\n\nExemplo: 300 ou 150,50`
+      `${cat?.emoji || '🎯'} Meta para ${cat?.nome || 'categoria'}\n\n` +
+      `Qual o limite mensal em reais?\n\n` +
+      `Exemplos: 200 ou 350,50`
     );
     return;
   }
@@ -173,10 +209,8 @@ async function handleTextoMeta(ctx) {
     sessoesMeta.delete(String(usuarioId));
     return false;
   }
-
   if (sessao.etapa !== 'aguardando_valor') return false;
 
-  // Interpretar valor
   const texto = ctx.message.text.replace(',', '.');
   const valor = parseFloat(texto);
 
@@ -189,7 +223,6 @@ async function handleTextoMeta(ctx) {
   const mes = agora.getMonth() + 1;
   const ano = agora.getFullYear();
 
-  // Salvar ou atualizar meta
   const { data: existente } = await supabase
     .from('metas')
     .select('id')
@@ -218,15 +251,14 @@ async function handleTextoMeta(ctx) {
 
   sessoesMeta.delete(String(usuarioId));
 
-  // Buscar nome da categoria para confirmar
-  const { data: cat } = await supabase
-    .from('categorias')
-    .select('nome, emoji')
-    .eq('id', sessao.categoriaId)
-    .single();
+  const nomeMes = agora.toLocaleString('pt-BR', { month: 'long' });
 
   await ctx.reply(
-    `✅ Meta definida!\n\n${cat?.emoji || '🎯'} ${cat?.nome || 'Categoria'}: R$ ${valor.toFixed(2)}/mes\n\nVou te avisar quando atingir 80% e 100%! Use /metas para acompanhar.`
+    `✅ Meta salva!\n\n` +
+    `${sessao.emojiCategoria} ${sessao.nomeCategoria}\n` +
+    `💰 Limite: R$ ${valor.toFixed(2)} em ${nomeMes}\n\n` +
+    `Vou te avisar quando atingir 80% e quando estourar!\n` +
+    `Use /metas para acompanhar o progresso.`
   );
 
   return true;
