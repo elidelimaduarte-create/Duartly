@@ -11,6 +11,7 @@ const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require(
 const { handleDashboard } = require('./handlers/dashboardHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
+const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
 
 iniciarHealthCheck();
 
@@ -58,6 +59,10 @@ bot.help(async (ctx) => {
     `/parcelas - parcelamentos ativos\n` +
     `/insights - Cuzco analisa seus padroes\n` +
     `/dashboard - seu painel financeiro completo\n\n` +
+    `Agentes autonomos:\n` +
+    `🦙 Cuzco - alerta diario as 20h\n` +
+    `🌙 Luna - analise quinzenal\n` +
+    `☀️ Inti - panorama mensal\n\n` +
     `Perguntas naturais:\n` +
     `"Quanto gastei com delivery esse mes?"\n` +
     `"Qual foi meu maior gasto essa semana?"`
@@ -73,6 +78,22 @@ bot.command('parcelas',  handleParcelas);
 bot.command('insights',  handleInsights);
 bot.command('dashboard', handleDashboard);
 
+// Testar agentes manualmente
+bot.command('cuzco', async (ctx) => {
+  await ctx.reply('🦙 Chamando o Cuzco...');
+  await executarCuzco();
+});
+
+bot.command('luna', async (ctx) => {
+  await ctx.reply('🌙 Chamando a Luna...');
+  await executarLuna();
+});
+
+bot.command('inti', async (ctx) => {
+  await ctx.reply('☀️ Chamando o Inti...');
+  await executarInti();
+});
+
 // ============================================================
 // ROTEADOR INTELIGENTE
 // ============================================================
@@ -80,11 +101,9 @@ bot.on('text', async (ctx) => {
   const texto = ctx.message.text;
   const usuarioId = ctx.usuario.id;
 
-  // 1. Verificar se está no meio do fluxo de cartão
   const interceptado = await handleTextoCartao(ctx);
   if (interceptado) return;
 
-  // 2. Rotear com Gemini
   const prompt = `
 Analise a mensagem e responda APENAS com JSON valido, sem markdown.
 Mensagem: "${texto}"
@@ -111,7 +130,6 @@ Regras:
         return;
       }
 
-      // Se parcelado → fluxo de cartão
       if (classificacao.parcelado && classificacao.total_parcelas > 1) {
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id);
         classificacao.raw_input = texto;
@@ -119,7 +137,6 @@ Regras:
         return;
       }
 
-      // Gasto simples → salvar direto
       const resultado2 = await salvarTransacao(usuarioId, classificacao, 'texto', texto);
       const transacao = resultado2.transacoes[0];
       const alertaMeta = await verificarMetas(usuarioId, transacao.categoria_id);
@@ -168,7 +185,6 @@ async function handleConversa(ctx, texto) {
 Voce e o Duartly, uma lhama financeira brasileira bem-humorada e direta.
 Responda em NO MAXIMO 2 frases curtas. Sem asteriscos ou markdown.
 REGRA: sempre termine redirecionando pro proposito financeiro do app.
-Use ganchos como: "Falando nisso, o que voce consumiu hoje?", "Me manda um gasto!", "Bora ver no que voce gastou?"
 Mensagem: "${texto}"
 Nome: ${nome}
 `;
@@ -181,7 +197,7 @@ Nome: ${nome}
 }
 
 // ============================================================
-// CALLBACKS — botões inline
+// CALLBACKS
 // ============================================================
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
@@ -213,7 +229,10 @@ bot.catch((err, ctx) => {
 });
 
 bot.launch()
-  .then(() => console.log('🦙 Duartly v2 rodando!'))
+  .then(() => {
+    console.log('🦙 Duartly v2 rodando!');
+    iniciarAgentes(bot);
+  })
   .catch((err) => {
     console.error('Erro ao iniciar bot:', err);
     process.exit(1);
