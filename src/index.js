@@ -9,39 +9,42 @@ const { handleDashboard } = require('./handlers/dashboardHandler');
 const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
 const { handleAgente, handleCallbackAgente, handleTextoAgente } = require('./handlers/agenteCustomHandler');
 const { handleRelatorio } = require('./handlers/relatorioHandler');
-const { middlewareAcesso, handleAssinar, handleConvite, handleStartComConvite, handleStartNormal, handleCancelar, handleCallbackCancelamento } = require('./handlers/acessoHandler');
+const { middlewareAcesso, handleAssinar, handleConvite, handleCancelar, handleCallbackCancelamento, handleStartComConvite, handleStartNormal } = require('./handlers/acessoHandler');
+const { handleEditar, handleCallbackEditar, handleTextoEditar } = require('./handlers/editarHandler');
+const { iniciarOnboarding, verificarOnboarding, handleCallbackOnboarding, ehUsuarioNovo } = require('./handlers/onboardingHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
 const { verificarExpiracoes } = require('./services/assinaturaService');
 const cron = require('node-cron');
 
-// healthcheck iniciado após bot.launch() para ter acesso ao bot
-// (veja abaixo no bot.launch)
-
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Middleware: registra usuário
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
-  try {
-    ctx.usuario = await obterOuCriarUsuario(ctx);
-  } catch (err) {
-    console.error('Erro no middleware:', err);
-  }
+  try { ctx.usuario = await obterOuCriarUsuario(ctx); }
+  catch (err) { console.error('Erro no middleware:', err); }
   return next();
 });
 
 // Middleware: controle de acesso
 bot.use(middlewareAcesso);
 
-// /start — com ou sem código de convite
+// /start
 bot.start(async (ctx) => {
-  const payload = ctx.startPayload; // código de convite passado via ?start=CODIGO
+  const payload = ctx.startPayload;
+  const usuario = ctx.usuario;
+
   if (payload && payload.length > 3) {
     await handleStartComConvite(ctx, payload.toUpperCase());
   } else {
     await handleStartNormal(ctx);
+  }
+
+  // Onboarding para usuários novos
+  if (usuario && await ehUsuarioNovo(usuario.id)) {
+    setTimeout(() => iniciarOnboarding(ctx), 2000);
   }
 });
 
@@ -49,11 +52,14 @@ bot.help(async (ctx) => {
   await ctx.reply(
     `🦙 O que eu sei fazer:\n\n` +
     `Registrar gastos:\n"Almoco 35", "Uber 22", "Nike 300 em 3x"\n\n` +
-    `Consultas:\n/hoje /resumo /mes /parcelas /insights /dashboard\n\n` +
+    `Ou manda foto do cupom ou audio!\n\n` +
+    `Consultas:\n/hoje /resumo /mes /parcelas /insights\n\n` +
     `Relatorio:\n/relatorio - PDF completo do mes\n\n` +
     `Metas:\n/meta - definir meta\n/metas - ver progresso\n\n` +
-    `Agentes customizados:\n/agente - criar e gerenciar\n\n` +
-    `Conta:\n/assinar - ver planos\n/convite - seu codigo de indicacao\n\n` +
+    `Dashboard:\n/dashboard - painel web completo\n\n` +
+    `Editar:\n/editar - corrigir ultimo lancamento\n\n` +
+    `Agentes:\n/agente - criar alertas personalizados\n\n` +
+    `Conta:\n/assinar /convite /cancelar\n\n` +
     `Agentes autonomos:\n🦙 /cuzco 🌙 /luna ☀️ /inti`
   );
 });
@@ -73,6 +79,7 @@ bot.command('relatorio', handleRelatorio);
 bot.command('assinar',   handleAssinar);
 bot.command('convite',   handleConvite);
 bot.command('cancelar',  handleCancelar);
+bot.command('editar',    handleEditar);
 
 bot.command('cuzco', async (ctx) => { await ctx.reply('🦙 Chamando o Cuzco...'); await executarCuzco(bot); });
 bot.command('luna',  async (ctx) => { await ctx.reply('🌙 Chamando a Luna...'); await executarLuna(bot); });
@@ -86,6 +93,7 @@ bot.on('text', async (ctx) => {
   if (await handleTextoMeta(ctx)) return;
   if (await handleTextoAgente(ctx)) return;
   if (await handleTextoCartao(ctx)) return;
+  if (await handleTextoEditar(ctx)) return;
 
   const prompt = `Analise a mensagem e responda APENAS com JSON valido.
 Mensagem: "${texto}"
@@ -131,11 +139,14 @@ Mensagem: "${texto}"
         reply_markup: { inline_keyboard: [[{ text: '↩️ Desfazer', callback_data: `desfazer_${transacao.id}` }]] }
       });
 
+      // Verificar onboarding após primeiro gasto
+      await verificarOnboarding(ctx);
+
     } else if (json.intencao === 'consulta') {
       await handlePerguntaLivre(ctx, texto);
     } else {
       const nome = ctx.from.first_name || 'amigo';
-      const prompt2 = `Voce e o Duartly, lhama financeira brasileira bem-humorada. Max 2 frases. Sem markdown. Sempre redirecione para o app financeiro. Mensagem: "${texto}" Nome: ${nome}`;
+      const prompt2 = `Voce e o Duartly, lhama financeira brasileira bem-humorada. Max 2 frases. Sem markdown. Sempre redirecione para financas. Mensagem: "${texto}" Nome: ${nome}`;
       const r = await modeloConversa.generateContent(prompt2);
       await ctx.reply(r.response.text().trim());
     }
@@ -148,13 +159,14 @@ Mensagem: "${texto}"
 // Callbacks
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
-  if (data === 'confirmar_cancelamento' || data === 'manter_assinatura') {
-    await handleCallbackCancelamento(ctx); return;
-  }
-  if (data.startsWith('desfazer_'))  { await handleDesfazer(ctx); return; }
-  if (data.startsWith('meta_'))      { await handleCallbackMeta(ctx); return; }
-  if (data.startsWith('ac_'))        { await handleCallbackAgente(ctx); return; }
-  if (data === 'usar_convite')       { await ctx.answerCbQuery(); await ctx.reply('Digite seu codigo de convite:'); return; }
+
+  if (data === 'confirmar_cancelamento' || data === 'manter_assinatura') { await handleCallbackCancelamento(ctx); return; }
+  if (data.startsWith('desfazer_'))   { await handleDesfazer(ctx); return; }
+  if (data.startsWith('meta_'))       { await handleCallbackMeta(ctx); return; }
+  if (data.startsWith('ac_'))         { await handleCallbackAgente(ctx); return; }
+  if (data.startsWith('editar_'))     { await handleCallbackEditar(ctx); return; }
+  if (data.startsWith('onboarding_')) { await handleCallbackOnboarding(ctx); return; }
+  if (data === 'usar_convite')        { await ctx.answerCbQuery(); await ctx.reply('Digite seu codigo de convite:'); return; }
   if (data.startsWith('cartao_') || data.startsWith('venc_') || data.startsWith('parcela_') || data.startsWith('nome_')) {
     await handleCallbackCartao(ctx); return;
   }
@@ -174,9 +186,7 @@ bot.launch()
     iniciarHealthCheck(bot);
     iniciarAgentes(bot);
 
-    // Verificar expirações todo dia às 10h
     cron.schedule('0 10 * * *', () => {
-      console.log('Verificando expiracoes...');
       verificarExpiracoes(bot);
     }, { timezone: 'America/Sao_Paulo' });
   })
