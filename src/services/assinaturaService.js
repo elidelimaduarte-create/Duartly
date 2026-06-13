@@ -197,17 +197,9 @@ async function ativarAssinatura(usuarioId, pagamentoId, meses = 1) {
 // CRIAR LINK DE PAGAMENTO MERCADO PAGO
 // ============================================================
 async function criarLinkPagamento(usuario) {
-  // Por enquanto retorna link fixo do Mercado Pago
-  // Depois integrar com API do MP para gerar link dinâmico com usuário_id
-  const params = new URLSearchParams({
-    usuario_id: usuario.id,
-    telegram_id: usuario.telegram_id,
-    nome: usuario.nome || 'usuario'
-  });
-
-  // URL base do Mercado Pago (você vai configurar no painel do MP)
-  const baseUrl = process.env.MP_CHECKOUT_URL || 'https://www.mercadopago.com.br/subscriptions/checkout';
-  return `${baseUrl}?${params.toString()}`;
+  const planId = process.env.MP_PLAN_ID || 'a3b35b10f3614aaa8885512cb4a68355';
+  // external_reference = telegram_id para identificar o usuário no webhook
+  return `https://www.mercadopago.com.br/subscriptions/checkout?preapproval_plan_id=${planId}&external_reference=${usuario.telegram_id}`;
 }
 
 // ============================================================
