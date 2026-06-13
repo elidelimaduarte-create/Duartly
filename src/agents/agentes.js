@@ -1,44 +1,10 @@
 // src/agents/agentes.js
-// ============================================================
-// AGENTES AUTÔNOMOS DO DUARTLY
-// Cuzco (diário), Luna (quinzenal), Inti (mensal)
-// ============================================================
 const cron = require('node-cron');
 const supabase = require('../config/supabase');
 const { modeloConversa } = require('../config/gemini');
 
-let botInstance = null;
-
-function iniciarAgentes(bot) {
-  botInstance = bot;
-
-  // CUZCO — todo dia às 20h (horário de Brasília = 23h UTC)
-  cron.schedule('0 23 * * *', () => {
-    console.log('🦙 Cuzco acordou! Analisando gastos do dia...');
-    executarCuzco();
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // LUNA — dias 15 e último dia do mês às 18h
-  cron.schedule('0 18 15,28,29,30,31 * *', () => {
-    const hoje = new Date();
-    const ultimoDia = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
-    if (hoje.getDate() === 15 || hoje.getDate() === ultimoDia) {
-      console.log('🌙 Luna acordou! Analisando tendências quinzenais...');
-      executarLuna();
-    }
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // INTI — todo dia 1 às 9h
-  cron.schedule('0 9 1 * *', () => {
-    console.log('☀️ Inti acordou! Preparando panorama mensal...');
-    executarInti();
-  }, { timezone: 'America/Sao_Paulo' });
-
-  console.log('🦙 Agentes Cuzco, Luna e Inti iniciados!');
-}
-
 // ============================================================
-// BUSCAR TODOS OS USUÁRIOS ATIVOS
+// BUSCAR USUÁRIOS ATIVOS
 // ============================================================
 async function buscarUsuariosAtivos() {
   const { data } = await supabase
@@ -49,11 +15,11 @@ async function buscarUsuariosAtivos() {
 }
 
 // ============================================================
-// ENVIAR MENSAGEM PARA USUÁRIO
+// ENVIAR MENSAGEM
 // ============================================================
-async function enviarMensagem(telegramId, mensagem) {
+async function enviarMensagem(bot, telegramId, mensagem) {
   try {
-    await botInstance.telegram.sendMessage(telegramId, mensagem);
+    await bot.telegram.sendMessage(telegramId, mensagem);
   } catch (err) {
     console.error(`Erro ao enviar para ${telegramId}:`, err.message);
   }
@@ -62,22 +28,20 @@ async function enviarMensagem(telegramId, mensagem) {
 // ============================================================
 // CUZCO — Agente Diário
 // ============================================================
-async function executarCuzco() {
+async function executarCuzco(bot) {
   const usuarios = await buscarUsuariosAtivos();
-
   for (const usuario of usuarios) {
     try {
-      await analisarDiaCuzco(usuario);
+      await analisarDiaCuzco(bot, usuario);
     } catch (err) {
       console.error(`Erro Cuzco para ${usuario.telegram_id}:`, err);
     }
   }
 }
 
-async function analisarDiaCuzco(usuario) {
+async function analisarDiaCuzco(bot, usuario) {
   const hoje = new Date().toISOString().split('T')[0];
 
-  // Buscar gastos do dia
   const { data: gastosHoje } = await supabase
     .from('transacoes')
     .select('*, categorias(nome, emoji)')
@@ -86,11 +50,16 @@ async function analisarDiaCuzco(usuario) {
     .eq('tipo', 'gasto')
     .eq('cancelado', false);
 
-  if (!gastosHoje || gastosHoje.length === 0) return; // Sem gastos hoje, não incomoda
+  if (!gastosHoje || gastosHoje.length === 0) {
+    await enviarMensagem(bot, usuario.telegram_id,
+      `🦙 Cuzco aqui! Nenhum gasto registrado hoje. Dia economico ou esqueceu de registrar? Me manda seus gastos!`
+    );
+    return;
+  }
 
   const totalHoje = gastosHoje.reduce((a, t) => a + parseFloat(t.valor), 0);
 
-  // Buscar média dos últimos 30 dias para comparar
+  // Média dos últimos 30 dias
   const trintaDiasAtras = new Date();
   trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
 
@@ -103,63 +72,50 @@ async function analisarDiaCuzco(usuario) {
     .gte('data_transacao', trintaDiasAtras.toISOString().split('T')[0])
     .lt('data_transacao', hoje);
 
-  // Calcular média diária
   const diasComGasto = new Set(gastosRecentes?.map(t => t.data_transacao) || []).size;
   const totalRecente = gastosRecentes?.reduce((a, t) => a + parseFloat(t.valor), 0) || 0;
   const mediaDiaria = diasComGasto > 0 ? totalRecente / diasComGasto : 0;
+  const acimaDaMedia = mediaDiaria > 0 && totalHoje > mediaDiaria * 1.5;
 
-  // Montar resumo para o Gemini
   const resumoGastos = gastosHoje.map(t =>
     `${t.categorias?.emoji || '📌'} ${t.descricao}: R$ ${t.valor} (${t.categorias?.nome || 'Outros'})`
   ).join('\n');
 
-  const acimaDaMedia = mediaDiaria > 0 && totalHoje > mediaDiaria * 1.5;
-
   const prompt = `
-Voce e o Cuzco, agente financeiro diario do Duartly. Personalidade: esperto, direto, um pouco ironico mas simpatico.
-Analise os gastos de hoje do usuario ${usuario.nome || 'usuario'} e mande uma mensagem curta (max 3 frases).
-Sem markdown, sem asteriscos.
+Voce e o Cuzco, agente financeiro diario do Duartly. Personalidade: esperto, direto, ironico mas simpatico.
+Analise os gastos de hoje e mande mensagem curta (max 3 frases). Sem markdown, sem asteriscos.
 
+Usuario: ${usuario.nome || 'usuario'}
 Gastos de hoje:
 ${resumoGastos}
-
 Total hoje: R$ ${totalHoje.toFixed(2)}
-Media diaria dos ultimos 30 dias: R$ ${mediaDiaria.toFixed(2)}
+Media diaria 30 dias: R$ ${mediaDiaria.toFixed(2)}
 Acima da media: ${acimaDaMedia ? 'SIM - 50% acima!' : 'nao'}
 
-${acimaDaMedia ? 'DESTAQUE que hoje foi um dia de gastos acima do normal.' : 'Faca um resumo rapido e simpatico.'}
-
+${acimaDaMedia ? 'ALERTE que hoje foi dia de gastos acima do normal!' : 'Faca resumo rapido e simpatico.'}
 Comece com: "🦙 Cuzco aqui!"
 `;
 
   const resultado = await modeloConversa.generateContent(prompt);
   const mensagem = resultado.response.text().trim();
-
-  await enviarMensagem(usuario.telegram_id, mensagem);
-
-  // Registrar no job
-  await supabase.from('jobs_agendados')
-    .update({ ultimo_envio: new Date().toISOString() })
-    .eq('usuario_id', usuario.id)
-    .eq('tipo', 'relatorio_semanal');
+  await enviarMensagem(bot, usuario.telegram_id, mensagem);
 }
 
 // ============================================================
 // LUNA — Agente Quinzenal
 // ============================================================
-async function executarLuna() {
+async function executarLuna(bot) {
   const usuarios = await buscarUsuariosAtivos();
-
   for (const usuario of usuarios) {
     try {
-      await analisarQuinzenaLuna(usuario);
+      await analisarQuinzenaLuna(bot, usuario);
     } catch (err) {
       console.error(`Erro Luna para ${usuario.telegram_id}:`, err);
     }
   }
 }
 
-async function analisarQuinzenaLuna(usuario) {
+async function analisarQuinzenaLuna(bot, usuario) {
   const hoje = new Date();
   const quinzeDiasAtras = new Date();
   quinzeDiasAtras.setDate(hoje.getDate() - 15);
@@ -173,9 +129,13 @@ async function analisarQuinzenaLuna(usuario) {
     .gte('data_transacao', quinzeDiasAtras.toISOString().split('T')[0])
     .lte('data_transacao', hoje.toISOString().split('T')[0]);
 
-  if (!transacoes || transacoes.length < 3) return;
+  if (!transacoes || transacoes.length < 2) {
+    await enviarMensagem(bot, usuario.telegram_id,
+      `🌙 Luna aqui! Ainda tenho poucos dados para analisar os ultimos 15 dias. Continue registrando seus gastos!`
+    );
+    return;
+  }
 
-  // Agrupar por categoria
   const porCategoria = {};
   transacoes.forEach(t => {
     const cat = t.categorias?.nome || 'Outros';
@@ -192,8 +152,7 @@ async function analisarQuinzenaLuna(usuario) {
 
   const prompt = `
 Voce e a Luna, agente financeira quinzenal do Duartly. Personalidade: analitica, serena, perspicaz.
-Analise os gastos dos ultimos 15 dias e identifique 2-3 tendencias importantes.
-Sem markdown, sem asteriscos. Maximo 4 frases.
+Analise os gastos dos ultimos 15 dias e identifique 2-3 tendencias. Sem markdown. Maximo 4 frases.
 
 Usuario: ${usuario.nome || 'usuario'}
 Total gasto: R$ ${totalGasto.toFixed(2)}
@@ -206,32 +165,24 @@ Termine sugerindo uma acao pratica para os proximos 15 dias.
 
   const resultado = await modeloConversa.generateContent(prompt);
   const mensagem = resultado.response.text().trim();
-
-  await enviarMensagem(usuario.telegram_id, mensagem);
-
-  await supabase.from('jobs_agendados')
-    .update({ ultimo_envio: new Date().toISOString() })
-    .eq('usuario_id', usuario.id)
-    .eq('tipo', 'relatorio_semanal');
+  await enviarMensagem(bot, usuario.telegram_id, mensagem);
 }
 
 // ============================================================
 // INTI — Agente Mensal
 // ============================================================
-async function executarInti() {
+async function executarInti(bot) {
   const usuarios = await buscarUsuariosAtivos();
-
   for (const usuario of usuarios) {
     try {
-      await analisarMesInti(usuario);
+      await analisarMesInti(bot, usuario);
     } catch (err) {
       console.error(`Erro Inti para ${usuario.telegram_id}:`, err);
     }
   }
 }
 
-async function analisarMesInti(usuario) {
-  // Pegar mês anterior
+async function analisarMesInti(bot, usuario) {
   const agora = new Date();
   const mesAnterior = new Date(agora.getFullYear(), agora.getMonth() - 1, 1);
   const inicioMes = mesAnterior.toISOString().split('T')[0];
@@ -245,7 +196,12 @@ async function analisarMesInti(usuario) {
     .gte('data_transacao', inicioMes)
     .lte('data_transacao', fimMes);
 
-  if (!transacoes || transacoes.length < 3) return;
+  if (!transacoes || transacoes.length < 2) {
+    await enviarMensagem(bot, usuario.telegram_id,
+      `☀️ Inti aqui! Dados insuficientes do mes anterior para gerar projecao. Continue registrando seus gastos!`
+    );
+    return;
+  }
 
   const gastos = transacoes.filter(t => t.tipo === 'gasto');
   const receitas = transacoes.filter(t => t.tipo === 'receita');
@@ -253,7 +209,6 @@ async function analisarMesInti(usuario) {
   const totalReceitas = receitas.reduce((a, t) => a + parseFloat(t.valor), 0);
   const saldo = totalReceitas - totalGastos;
 
-  // Top categorias
   const porCategoria = {};
   gastos.forEach(t => {
     const cat = t.categorias?.nome || 'Outros';
@@ -271,8 +226,7 @@ async function analisarMesInti(usuario) {
 
   const prompt = `
 Voce e o Inti, agente financeiro mensal do Duartly. Personalidade: grandioso, visionario, estrategico.
-Faca um panorama do mes de ${nomeMes} e uma projecao estrategica para o mes atual.
-Sem markdown, sem asteriscos. Maximo 5 frases.
+Faca panorama do mes de ${nomeMes} e projecao para o mes atual. Sem markdown. Maximo 5 frases.
 
 Usuario: ${usuario.nome || 'usuario'}
 Receitas: R$ ${totalReceitas.toFixed(2)}
@@ -281,23 +235,43 @@ Saldo: R$ ${saldo.toFixed(2)}
 Top categorias: ${topCategorias}
 
 Comece com: "☀️ Inti aqui! Fechamento de ${nomeMes}:"
-Termine com uma estrategia clara para o mes atual.
+Termine com estrategia clara para o mes atual.
 `;
 
   const resultado = await modeloConversa.generateContent(prompt);
   const mensagem = resultado.response.text().trim();
-
-  await enviarMensagem(usuario.telegram_id, mensagem);
-
-  await supabase.from('jobs_agendados')
-    .update({ ultimo_envio: new Date().toISOString() })
-    .eq('usuario_id', usuario.id)
-    .eq('tipo', 'relatorio_mensal');
+  await enviarMensagem(bot, usuario.telegram_id, mensagem);
 }
 
 // ============================================================
-// EXPORTAR PARA TESTES MANUAIS
+// INICIAR CRON JOBS
 // ============================================================
+function iniciarAgentes(bot) {
+  // Cuzco — todo dia às 20h
+  cron.schedule('0 20 * * *', () => {
+    console.log('🦙 Cuzco iniciando analise diaria...');
+    executarCuzco(bot);
+  }, { timezone: 'America/Sao_Paulo' });
+
+  // Luna — dias 15 e último do mês às 18h
+  cron.schedule('0 18 15,28,29,30,31 * *', () => {
+    const hoje = new Date();
+    const ultimoDia = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+    if (hoje.getDate() === 15 || hoje.getDate() === ultimoDia) {
+      console.log('🌙 Luna iniciando analise quinzenal...');
+      executarLuna(bot);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
+  // Inti — todo dia 1 às 9h
+  cron.schedule('0 9 1 * *', () => {
+    console.log('☀️ Inti iniciando panorama mensal...');
+    executarInti(bot);
+  }, { timezone: 'America/Sao_Paulo' });
+
+  console.log('🦙 Agentes Cuzco, Luna e Inti iniciados!');
+}
+
 module.exports = {
   iniciarAgentes,
   executarCuzco,
