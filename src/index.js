@@ -16,7 +16,8 @@ const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('.
 const { verificarExpiracoes } = require('./services/assinaturaService');
 const cron = require('node-cron');
 
-iniciarHealthCheck();
+// healthcheck iniciado após bot.launch() para ter acesso ao bot
+// (veja abaixo no bot.launch)
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -166,6 +167,7 @@ bot.catch((err, ctx) => {
 bot.launch()
   .then(() => {
     console.log('🦙 Duartly v2 rodando!');
+    iniciarHealthCheck(bot);
     iniciarAgentes(bot);
 
     // Verificar expirações todo dia às 10h
