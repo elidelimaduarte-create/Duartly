@@ -2,6 +2,16 @@
 const supabase = require('../config/supabase');
 const { modeloConversa } = require('../config/gemini');
 
+// Escapa caracteres especiais do Markdown para evitar erros do Telegram
+function escaparMarkdown(texto) {
+  return texto
+    .replace(/\*/g, '')
+    .replace(/\_/g, '')
+    .replace(/\[/g, '')
+    .replace(/\]/g, '')
+    .replace(/\`/g, '');
+}
+
 // ============================================================
 // /hoje — gastos do dia
 // ============================================================
@@ -27,26 +37,26 @@ async function handleHoje(ctx) {
   const totalGastos = gastos.reduce((acc, t) => acc + parseFloat(t.valor), 0);
   const totalReceitas = receitas.reduce((acc, t) => acc + parseFloat(t.valor), 0);
 
-  let resposta = `🦙 *Hoje — ${formatarData(hoje)}*\n\n`;
+  let resposta = `🦙 Hoje — ${formatarData(hoje)}\n\n`;
 
   if (gastos.length > 0) {
-    resposta += `*💸 Gastos:*\n`;
+    resposta += `💸 Gastos:\n`;
     gastos.forEach(t => {
       const emoji = t.categorias?.emoji || '📌';
       resposta += `${emoji} ${t.descricao} — R$ ${parseFloat(t.valor).toFixed(2)}\n`;
     });
-    resposta += `\n💰 *Total gasto: R$ ${totalGastos.toFixed(2)}*`;
+    resposta += `\n💰 Total gasto: R$ ${totalGastos.toFixed(2)}`;
   }
 
   if (receitas.length > 0) {
-    resposta += `\n\n*💵 Receitas:*\n`;
+    resposta += `\n\n💵 Receitas:\n`;
     receitas.forEach(t => {
       resposta += `💵 ${t.descricao} — R$ ${parseFloat(t.valor).toFixed(2)}\n`;
     });
-    resposta += `\n💰 *Total recebido: R$ ${totalReceitas.toFixed(2)}*`;
+    resposta += `\n💰 Total recebido: R$ ${totalReceitas.toFixed(2)}`;
   }
 
-  await ctx.reply(resposta, { parse_mode: 'Markdown' });
+  await ctx.reply(resposta);
 }
 
 // ============================================================
@@ -71,7 +81,6 @@ async function handleResumo(ctx) {
     return;
   }
 
-  // Agrupar por categoria
   const porCategoria = {};
   transacoes.forEach(t => {
     const cat = t.categorias?.nome || 'Outros';
@@ -83,22 +92,21 @@ async function handleResumo(ctx) {
 
   const totalGeral = transacoes.reduce((acc, t) => acc + parseFloat(t.valor), 0);
 
-  let resposta = `🦙 *Resumo da Semana*\n`;
-  resposta += `_${formatarData(inicio)} a ${formatarData(fim)}_\n\n`;
+  let resposta = `🦙 Resumo da Semana\n`;
+  resposta += `${formatarData(inicio)} a ${formatarData(fim)}\n\n`;
 
-  // Ordenar por maior gasto
   Object.entries(porCategoria)
     .sort((a, b) => b[1].total - a[1].total)
     .forEach(([cat, dados]) => {
       const barra = gerarBarra(dados.total, totalGeral);
-      resposta += `${dados.emoji} *${cat}*\n`;
+      resposta += `${dados.emoji} ${cat}\n`;
       resposta += `${barra} R$ ${dados.total.toFixed(2)}\n\n`;
     });
 
-  resposta += `💰 *Total: R$ ${totalGeral.toFixed(2)}*\n`;
+  resposta += `💰 Total: R$ ${totalGeral.toFixed(2)}\n`;
   resposta += `📊 ${transacoes.length} lançamentos`;
 
-  await ctx.reply(resposta, { parse_mode: 'Markdown' });
+  await ctx.reply(resposta);
 }
 
 // ============================================================
@@ -132,7 +140,6 @@ async function handleMes(ctx) {
   const totalReceitas = receitas.reduce((acc, t) => acc + parseFloat(t.valor), 0);
   const saldo = totalReceitas - totalGastos;
 
-  // Agrupar gastos por categoria
   const porCategoria = {};
   gastos.forEach(t => {
     const cat = t.categorias?.nome || 'Outros';
@@ -142,13 +149,13 @@ async function handleMes(ctx) {
   });
 
   const nomeMes = agora.toLocaleString('pt-BR', { month: 'long' });
-  let resposta = `🦙 *${nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1)} ${ano}*\n\n`;
+  let resposta = `🦙 ${nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1)} ${ano}\n\n`;
 
-  resposta += `💵 *Receitas:* R$ ${totalReceitas.toFixed(2)}\n`;
-  resposta += `💸 *Gastos:* R$ ${totalGastos.toFixed(2)}\n`;
-  resposta += `${saldo >= 0 ? '✅' : '⚠️'} *Saldo: R$ ${saldo.toFixed(2)}*\n\n`;
+  resposta += `💵 Receitas: R$ ${totalReceitas.toFixed(2)}\n`;
+  resposta += `💸 Gastos: R$ ${totalGastos.toFixed(2)}\n`;
+  resposta += `${saldo >= 0 ? '✅' : '⚠️'} Saldo: R$ ${saldo.toFixed(2)}\n\n`;
 
-  resposta += `*Por categoria:*\n`;
+  resposta += `Por categoria:\n`;
   Object.entries(porCategoria)
     .sort((a, b) => b[1].total - a[1].total)
     .forEach(([cat, dados]) => {
@@ -156,7 +163,7 @@ async function handleMes(ctx) {
       resposta += `${dados.emoji} ${cat}: R$ ${dados.total.toFixed(2)} ${barra}\n`;
     });
 
-  await ctx.reply(resposta, { parse_mode: 'Markdown' });
+  await ctx.reply(resposta);
 }
 
 // ============================================================
@@ -180,7 +187,6 @@ async function handleParcelas(ctx) {
     return;
   }
 
-  // Agrupar por grupo_parcela
   const grupos = {};
   parcelas.forEach(p => {
     const grupo = p.grupo_parcela;
@@ -188,7 +194,7 @@ async function handleParcelas(ctx) {
     grupos[grupo].push(p);
   });
 
-  let resposta = `💳 *Parcelamentos Ativos*\n\n`;
+  let resposta = `💳 Parcelamentos Ativos\n\n`;
   let totalMensal = 0;
 
   Object.values(grupos).forEach(grupo => {
@@ -198,25 +204,24 @@ async function handleParcelas(ctx) {
     const totalRestante = valorParcela * restantes;
     totalMensal += valorParcela;
 
-    // Pegar nome sem "(X/Y)"
     const nome = primeira.descricao.replace(/\s*\(\d+\/\d+\)/, '');
-    resposta += `📦 *${nome}*\n`;
-    resposta += `💰 R$ ${valorParcela.toFixed(2)}/mês × ${restantes} restantes\n`;
-    resposta += `📅 Próxima: ${formatarData(primeira.data_transacao)}\n`;
+    resposta += `📦 ${nome}\n`;
+    resposta += `💰 R$ ${valorParcela.toFixed(2)}/mes x ${restantes} restantes\n`;
+    resposta += `📅 Proxima: ${formatarData(primeira.data_transacao)}\n`;
     resposta += `💸 Total restante: R$ ${totalRestante.toFixed(2)}\n\n`;
   });
 
-  resposta += `💳 *Compromisso mensal: R$ ${totalMensal.toFixed(2)}*`;
+  resposta += `💳 Compromisso mensal: R$ ${totalMensal.toFixed(2)}`;
 
-  await ctx.reply(resposta, { parse_mode: 'Markdown' });
+  await ctx.reply(resposta);
 }
 
 // ============================================================
-// /insights — análise de padrões (Cuzco fala!)
+// /insights — Cuzco analisa padrões
 // ============================================================
 async function handleInsights(ctx) {
   const usuarioId = ctx.usuario.id;
-  const msg = await ctx.reply('🦙 Cuzco analisando seus padrões...');
+  const msg = await ctx.reply('🦙 Cuzco analisando seus padroes...');
 
   const trintaDiasAtras = new Date();
   trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
@@ -238,41 +243,36 @@ async function handleInsights(ctx) {
     return;
   }
 
-  // Montar resumo para o Gemini
   const resumo = transacoes.map(t =>
     `${t.data_transacao}: ${t.descricao} - R$ ${t.valor} (${t.categorias?.nome || 'Outros'})`
   ).join('\n');
 
   const prompt = `
-Você é o Cuzco, agente financeiro esperto e direto da lhama Duartly.
-Analise esses gastos dos últimos 30 dias e dê 3-4 insights práticos em português brasileiro.
-Seja direto, use emojis, máximo 200 palavras.
+Voce e o Cuzco, agente financeiro esperto e direto da lhama Duartly.
+Analise esses gastos dos ultimos 30 dias e de 3-4 insights praticos em portugues brasileiro.
+Seja direto, use emojis, maximo 200 palavras.
+NAO use asteriscos, underlines ou qualquer formatacao Markdown. Texto simples apenas.
 
 Gastos:
 ${resumo}
 
-Formato da resposta:
-🦙 *Cuzco aqui! Analisei seus últimos 30 dias:*
-
-[insights diretos e práticos]
-
-*💡 Dica principal:* [uma ação concreta]
+Comece com: "🦙 Cuzco aqui! Analisei seus ultimos 30 dias:"
+Termine com: "💡 Dica principal: [uma acao concreta]"
 `;
 
   try {
     const resultado = await modeloConversa.generateContent(prompt);
-    const insights = resultado.response.text();
+    const insights = escaparMarkdown(resultado.response.text());
 
     await ctx.telegram.editMessageText(
       ctx.chat.id, msg.message_id, null,
-      insights,
-      { parse_mode: 'Markdown' }
+      insights
     );
   } catch (err) {
     console.error('Erro nos insights:', err);
     await ctx.telegram.editMessageText(
       ctx.chat.id, msg.message_id, null,
-      '🦙 Cuzco está descansando! Tenta de novo em instantes.'
+      '🦙 Cuzco esta descansando! Tenta de novo em instantes.'
     );
   }
 }
@@ -282,9 +282,8 @@ Formato da resposta:
 // ============================================================
 async function handlePerguntaLivre(ctx, pergunta) {
   const usuarioId = ctx.usuario.id;
-  const msg = await ctx.reply('🦙 Consultando...', { parse_mode: 'Markdown' });
+  const msg = await ctx.reply('🦙 Consultando...');
 
-  // Buscar últimas transações para contexto
   const { data: transacoes } = await supabase
     .from('transacoes')
     .select('*, categorias(nome, emoji)')
@@ -296,7 +295,7 @@ async function handlePerguntaLivre(ctx, pergunta) {
   if (!transacoes || transacoes.length === 0) {
     await ctx.telegram.editMessageText(
       ctx.chat.id, msg.message_id, null,
-      '🦙 Ainda não tenho transações suas para consultar!'
+      '🦙 Ainda nao tenho transacoes suas para consultar!'
     );
     return;
   }
@@ -308,30 +307,30 @@ async function handlePerguntaLivre(ctx, pergunta) {
   const hoje = new Date().toISOString().split('T')[0];
 
   const prompt = `
-Você é o Duartly, assistente financeiro pessoal simpático e direto.
-Hoje é ${hoje}. Responda a pergunta do usuário com base nas transações abaixo.
-Use emojis, seja conciso, máximo 150 palavras, em português brasileiro.
+Voce e o Duartly, assistente financeiro pessoal simpatico e direto.
+Hoje e ${hoje}. Responda a pergunta do usuario com base nas transacoes abaixo.
+Use emojis, seja conciso, maximo 150 palavras, em portugues brasileiro.
+NAO use asteriscos, underlines ou qualquer formatacao Markdown. Texto simples apenas.
 
 Pergunta: "${pergunta}"
 
-Transações:
+Transacoes:
 ${resumo}
 `;
 
   try {
     const resultado = await modeloConversa.generateContent(prompt);
-    const resposta = resultado.response.text();
+    const resposta = escaparMarkdown(resultado.response.text());
 
     await ctx.telegram.editMessageText(
       ctx.chat.id, msg.message_id, null,
-      resposta,
-      { parse_mode: 'Markdown' }
+      resposta
     );
   } catch (err) {
     console.error('Erro na pergunta livre:', err);
     await ctx.telegram.editMessageText(
       ctx.chat.id, msg.message_id, null,
-      '🦙 Ops! Não consegui responder. Tenta de novo!'
+      '🦙 Ops! Nao consegui responder. Tenta de novo!'
     );
   }
 }
