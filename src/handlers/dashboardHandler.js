@@ -27,7 +27,7 @@ async function handleDashboard(ctx) {
     return;
   }
 
-  const url = `https://duartly-dashboard.vercel.app/${token}`;
+  const url = `https://duartly-dashboard.vercel.app/?token=${token}`;
 
   await ctx.reply(
     `🦙 Seu dashboard esta pronto!\n\n📊 ${url}\n\n⏱ Link valido por 24 horas.`,
