@@ -9,7 +9,7 @@ const { handleDashboard } = require('./handlers/dashboardHandler');
 const { handleDefinirMeta, handleVerMetas, handleCallbackMeta, handleTextoMeta } = require('./handlers/metaHandler');
 const { handleAgente, handleCallbackAgente, handleTextoAgente } = require('./handlers/agenteCustomHandler');
 const { handleRelatorio } = require('./handlers/relatorioHandler');
-const { middlewareAcesso, handleAssinar, handleConvite, handleStartComConvite, handleStartNormal } = require('./handlers/acessoHandler');
+const { middlewareAcesso, handleAssinar, handleConvite, handleStartComConvite, handleStartNormal, handleCancelar, handleCallbackCancelamento } = require('./handlers/acessoHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
@@ -72,6 +72,7 @@ bot.command('agente',    handleAgente);
 bot.command('relatorio', handleRelatorio);
 bot.command('assinar',   handleAssinar);
 bot.command('convite',   handleConvite);
+bot.command('cancelar',  handleCancelar);
 
 bot.command('cuzco', async (ctx) => { await ctx.reply('🦙 Chamando o Cuzco...'); await executarCuzco(bot); });
 bot.command('luna',  async (ctx) => { await ctx.reply('🌙 Chamando a Luna...'); await executarLuna(bot); });
@@ -147,6 +148,9 @@ Mensagem: "${texto}"
 // Callbacks
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
+  if (data === 'confirmar_cancelamento' || data === 'manter_assinatura') {
+    await handleCallbackCancelamento(ctx); return;
+  }
   if (data.startsWith('desfazer_'))  { await handleDesfazer(ctx); return; }
   if (data.startsWith('meta_'))      { await handleCallbackMeta(ctx); return; }
   if (data.startsWith('ac_'))        { await handleCallbackAgente(ctx); return; }
