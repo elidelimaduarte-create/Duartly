@@ -2,11 +2,13 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { obterOuCriarUsuario } = require('./services/usuarioService');
 const { iniciarHealthCheck } = require('./healthcheck');
-const { handleTexto, handleFoto, handleVoz, handleDesfazer } = require('./handlers/mensagemHandler');
+const { handleFoto, handleVoz, handleDesfazer } = require('./handlers/mensagemHandler');
 const {
   handleHoje, handleResumo, handleMes,
   handleParcelas, handleInsights, handlePerguntaLivre
 } = require('./handlers/consultaHandler');
+const { handleCallbackCartao, handleTextoCartao, iniciarFluxoCartao } = require('./handlers/cartaoHandler');
+const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 
 iniciarHealthCheck();
@@ -28,37 +30,35 @@ bot.use(async (ctx, next) => {
 bot.start(async (ctx) => {
   const nome = ctx.from.first_name || 'amigo';
   await ctx.reply(
-    `🦙 Olá, ${nome}! Sou o Duartly, sua lhama financeira pessoal.\n\n` +
-    `Me conta um gasto e eu já registro pra você:\n\n` +
-    `*Exemplos:*\n` +
-    `• "Padaria 18,50"\n` +
-    `• "Nike 350 em 3x no crédito"\n` +
-    `• "iFood 45"\n\n` +
-    `Ou manda uma foto do cupom 📸 ou áudio 🎙️\n\n` +
-    `Digite /ajuda para ver tudo que sei fazer! 🦙`,
-    { parse_mode: 'Markdown' }
+    `🦙 Ola, ${nome}! Sou o Duartly, sua lhama financeira pessoal.\n\n` +
+    `Me conta um gasto e eu ja registro pra voce:\n\n` +
+    `Exemplos:\n` +
+    `- "Padaria 18,50"\n` +
+    `- "Nike 350 em 3x no credito"\n` +
+    `- "iFood 45"\n\n` +
+    `Ou manda uma foto do cupom ou audio!\n\n` +
+    `Digite /ajuda para ver tudo que sei fazer! 🦙`
   );
 });
 
 // /ajuda
 bot.help(async (ctx) => {
   await ctx.reply(
-    `🦙 *O que eu sei fazer:*\n\n` +
-    `*Registrar gastos — só falar natural:*\n` +
-    `"Almoço 35", "Uber 22", "Nike 300 em 3x"\n\n` +
-    `*Ou manda:*\n` +
-    `📸 Foto do cupom → leio e registro\n` +
-    `🎙️ Áudio → transcrevo e registro\n\n` +
-    `*Consultas:*\n` +
-    `/hoje — gastos do dia\n` +
-    `/resumo — semana atual\n` +
-    `/mes — fechamento do mês\n` +
-    `/parcelas — parcelamentos ativos\n` +
-    `/insights — Cuzco analisa seus padrões\n\n` +
-    `*Perguntas naturais:*\n` +
-    `"Quanto gastei com delivery esse mês?"\n` +
-    `"Qual foi meu maior gasto essa semana?"`,
-    { parse_mode: 'Markdown' }
+    `🦙 O que eu sei fazer:\n\n` +
+    `Registrar gastos - so falar natural:\n` +
+    `"Almoco 35", "Uber 22", "Nike 300 em 3x"\n\n` +
+    `Ou manda:\n` +
+    `Foto do cupom -> leio e registro\n` +
+    `Audio -> transcrevo e registro\n\n` +
+    `Consultas:\n` +
+    `/hoje - gastos do dia\n` +
+    `/resumo - semana atual\n` +
+    `/mes - fechamento do mes\n` +
+    `/parcelas - parcelamentos ativos\n` +
+    `/insights - Cuzco analisa seus padroes\n\n` +
+    `Perguntas naturais:\n` +
+    `"Quanto gastei com delivery esse mes?"\n` +
+    `"Qual foi meu maior gasto essa semana?"`
   );
 });
 
@@ -75,22 +75,21 @@ bot.command('insights', handleInsights);
 // ============================================================
 bot.on('text', async (ctx) => {
   const texto = ctx.message.text;
+  const usuarioId = ctx.usuario.id;
 
+  // 1. Verificar se está no meio do fluxo de cartão
+  const interceptado = await handleTextoCartao(ctx);
+  if (interceptado) return;
+
+  // 2. Rotear com Gemini
   const prompt = `
-Você é o roteador do Duartly, assistente financeiro pessoal.
-Analise a mensagem e responda APENAS com JSON válido, sem markdown.
-
+Analise a mensagem e responda APENAS com JSON valido, sem markdown.
 Mensagem: "${texto}"
-
-Retorne exatamente neste formato:
-{
-  "intencao": "gasto" | "consulta" | "conversa"
-}
-
+{ "intencao": "gasto" | "consulta" | "conversa" }
 Regras:
 - "gasto": menciona valor, compra, pagamento, despesa ou receita
-- "consulta": pergunta sobre finanças, gastos, histórico, relatório
-- "conversa": qualquer outra coisa (saudação, curiosidade, etc)
+- "consulta": pergunta sobre financas, gastos, historico, relatorio
+- "conversa": qualquer outra coisa
 `;
 
   try {
@@ -98,7 +97,55 @@ Regras:
     const json = JSON.parse(resultado.response.text().replace(/```json|```/g, '').trim());
 
     if (json.intencao === 'gasto') {
-      await handleTexto(ctx);
+      // Classificar com Gemini
+      const msg = await ctx.reply('🦙 Analisando...');
+      const classificacao = await classificarGasto(texto);
+
+      if (!classificacao || !classificacao.valor) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, msg.message_id, null,
+          `🦙 Nao consegui identificar um gasto.\n\nTenta assim:\n- "Padaria 18,50"\n- "Uber 22"\n- "Nike 300 em 3x"`
+        );
+        return;
+      }
+
+      // Se parcelado → fluxo de cartão
+      if (classificacao.parcelado && classificacao.total_parcelas > 1) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id);
+        classificacao.raw_input = texto;
+        await iniciarFluxoCartao(ctx, classificacao);
+        return;
+      }
+
+      // Gasto simples → salvar direto
+      const resultado2 = await salvarTransacao(usuarioId, classificacao, 'texto', texto);
+      const transacao = resultado2.transacoes[0];
+      const alertaMeta = await verificarMetas(usuarioId, transacao.categoria_id);
+
+      const emoji = classificacao.tipo === 'receita' ? '💵' : '💸';
+      const sinal = classificacao.tipo === 'receita' ? '+' : '-';
+      let resposta =
+        `${emoji} ${classificacao.descricao}\n` +
+        `💰 ${sinal}R$ ${classificacao.valor.toFixed(2)}\n` +
+        `🏷️ ${classificacao.categoria}\n` +
+        `✅ Registrado!`;
+
+      if (alertaMeta) {
+        resposta += `\n\n⚠️ Atencao! Voce ja usou ${alertaMeta.percentual}% da sua meta de ${classificacao.categoria}!`;
+      }
+
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, msg.message_id, null,
+        resposta,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '↩️ Desfazer', callback_data: `desfazer_${transacao.id}` }
+            ]]
+          }
+        }
+      );
+
     } else if (json.intencao === 'consulta') {
       await handlePerguntaLivre(ctx, texto);
     } else {
@@ -106,49 +153,62 @@ Regras:
     }
   } catch (err) {
     console.error('Erro no roteador:', err);
-    await handleTexto(ctx);
+    await ctx.reply('🦙 Ops! Algo deu errado. Tenta de novo!');
   }
 });
 
 // ============================================================
-// CONVERSA CASUAL — IA com padrão fixo de redirecionamento
+// CONVERSA CASUAL
 // ============================================================
 async function handleConversa(ctx, texto) {
   const nome = ctx.from.first_name || 'amigo';
-
   const prompt = `
-Você é o Duartly, uma lhama financeira brasileira bem-humorada e direta.
-Responda a mensagem abaixo em NO MÁXIMO 2 frases curtas.
-
-REGRA OBRIGATÓRIA: a resposta SEMPRE deve terminar redirecionando para o propósito financeiro do app.
-Use ganchos como: "Falando nisso, o que você consumiu hoje?", "Vamos ao que interessa — me manda um gasto!", "Bora ver no que você gastou?", "Sua carteira que manda aqui! 💰"
-
+Voce e o Duartly, uma lhama financeira brasileira bem-humorada e direta.
+Responda em NO MAXIMO 2 frases curtas. Sem asteriscos ou markdown.
+REGRA: sempre termine redirecionando pro proposito financeiro do app.
+Use ganchos como: "Falando nisso, o que voce consumiu hoje?", "Me manda um gasto!", "Bora ver no que voce gastou?"
 Mensagem: "${texto}"
-Nome do usuário: ${nome}
-
-Use emojis, seja leve e engraçado. Máximo 2 frases. Sem introduções longas.
+Nome: ${nome}
 `;
-
   try {
     const resultado = await modeloConversa.generateContent(prompt);
-    const resposta = resultado.response.text().trim();
-    await ctx.reply(resposta, { parse_mode: 'Markdown' });
+    await ctx.reply(resultado.response.text().trim());
   } catch (err) {
-    // Fallback sem IA
-    await ctx.reply(
-      `🦙 Haha, boa! Mas vamos ao que interessa — me manda um gasto ou use /hoje pra ver o que você consumiu!`
-    );
+    await ctx.reply('🦙 Haha! Mas vamos ao que interessa — me manda um gasto ou use /hoje!');
   }
 }
 
+// ============================================================
+// CALLBACKS — botões inline
+// ============================================================
+bot.on('callback_query', async (ctx) => {
+  const data = ctx.callbackQuery.data;
+
+  // Desfazer transação
+  if (data.startsWith('desfazer_')) {
+    await handleDesfazer(ctx);
+    return;
+  }
+
+  // Fluxo de cartão
+  if (
+    data.startsWith('cartao_') ||
+    data.startsWith('venc_') ||
+    data.startsWith('parcela_') ||
+    data.startsWith('nome_')
+  ) {
+    await handleCallbackCartao(ctx);
+    return;
+  }
+});
+
 // Foto e voz
-bot.on('photo',          handleFoto);
-bot.on('voice',          handleVoz);
-bot.on('callback_query', handleDesfazer);
+bot.on('photo', handleFoto);
+bot.on('voice', handleVoz);
 
 // Erros
 bot.catch((err, ctx) => {
-  console.error(`Erro no bot:`, err);
+  console.error('Erro no bot:', err);
   ctx.reply('🦙 Ops! Algo deu errado. Tenta de novo!').catch(() => {});
 });
 
