@@ -78,20 +78,20 @@ bot.command('parcelas',  handleParcelas);
 bot.command('insights',  handleInsights);
 bot.command('dashboard', handleDashboard);
 
-// Testar agentes manualmente
+// Chamar agentes manualmente
 bot.command('cuzco', async (ctx) => {
   await ctx.reply('🦙 Chamando o Cuzco...');
-  await executarCuzco();
+  await executarCuzco(bot);
 });
 
 bot.command('luna', async (ctx) => {
   await ctx.reply('🌙 Chamando a Luna...');
-  await executarLuna();
+  await executarLuna(bot);
 });
 
 bot.command('inti', async (ctx) => {
   await ctx.reply('☀️ Chamando o Inti...');
-  await executarInti();
+  await executarInti(bot);
 });
 
 // ============================================================
