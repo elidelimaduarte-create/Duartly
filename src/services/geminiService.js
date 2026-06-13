@@ -3,15 +3,32 @@ const { modeloClassificacao, modeloConversa } = require('../config/gemini');
 const supabase = require('../config/supabase');
 
 // ============================================================
+// DATA DE BRASÍLIA (UTC-3)
+// ============================================================
+function getDataBrasilia() {
+  const agora = new Date();
+  // Ajusta para UTC-3
+  const brasilia = new Date(agora.getTime() - (3 * 60 * 60 * 1000));
+  return brasilia.toISOString().split('T')[0];
+}
+
+function getAgoraBrasilia() {
+  const agora = new Date();
+  return new Date(agora.getTime() - (3 * 60 * 60 * 1000));
+}
+
+// ============================================================
 // CLASSIFICAR GASTO EM TEXTO
 // ============================================================
 async function classificarGasto(texto) {
+  const hoje = getDataBrasilia();
   const prompt = `
-Você é um assistente financeiro brasileiro. Analise o texto abaixo e extraia as informações de gasto ou receita.
+Voce e um assistente financeiro brasileiro. Analise o texto abaixo e extraia as informacoes de gasto ou receita.
+Hoje e ${hoje} (horario de Brasilia).
 
 Texto: "${texto}"
 
-Responda APENAS com um JSON válido neste formato exato:
+Responda APENAS com um JSON valido neste formato exato:
 {
   "descricao": "nome do gasto ou receita",
   "valor": 00.00,
@@ -22,18 +39,18 @@ Responda APENAS com um JSON válido neste formato exato:
   "confianca": 0.00
 }
 
-Categorias disponíveis (use exatamente como escrito):
-Alimentação, Transporte, Moradia, Saúde, Lazer, Educação, Vestuário, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
+Categorias disponiveis (use exatamente como escrito):
+Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
 
 Regras:
-- Se mencionar "x" parcelas, "vezes", "x" ou "/x", é parcelado (ex: "3x", "em 3 vezes", "3/12")
+- Se mencionar "x" parcelas, "vezes", "x" ou "/x", e parcelado (ex: "3x", "em 3 vezes", "3/12")
 - Valores em reais: "18,50" = 18.50, "1.200" = 1200.00
-- "salário", "renda", "recebi" = tipo receita, categoria Receita
+- "salario", "renda", "recebi" = tipo receita, categoria Receita
 - Delivery (iFood, Rappi, Uber Eats) = categoria Delivery
-- Uber, 99, taxi, combustível = categoria Transporte
+- Uber, 99, taxi, combustivel = categoria Transporte
 - Mercado, supermercado, feira = categoria Mercado
-- confianca: 0.0 a 1.0 (quão certo você está da classificação)
-- Se não conseguir identificar valor, retorne null no valor
+- confianca: 0.0 a 1.0
+- Se nao conseguir identificar valor, retorne null no valor
 `;
 
   try {
@@ -52,9 +69,9 @@ Regras:
 // ============================================================
 async function classificarImagemCupom(imagemBase64, mimeType) {
   const prompt = `
-Você é um assistente financeiro brasileiro. Analise esta imagem de cupom fiscal ou comprovante de pagamento.
+Voce e um assistente financeiro brasileiro. Analise esta imagem de cupom fiscal ou comprovante de pagamento.
 
-Extraia TODAS as informações relevantes e responda APENAS com um JSON válido:
+Extraia TODAS as informacoes relevantes e responda APENAS com um JSON valido:
 {
   "descricao": "nome do estabelecimento ou produto principal",
   "valor": 00.00,
@@ -66,18 +83,13 @@ Extraia TODAS as informações relevantes e responda APENAS com um JSON válido:
   "itens": ["item1", "item2"]
 }
 
-Categorias: Alimentação, Transporte, Moradia, Saúde, Lazer, Educação, Vestuário, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
+Categorias: Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
 `;
 
   try {
     const resultado = await modeloClassificacao.generateContent([
       prompt,
-      {
-        inlineData: {
-          mimeType: mimeType,
-          data: imagemBase64
-        }
-      }
+      { inlineData: { mimeType, data: imagemBase64 } }
     ]);
     const texto_resposta = resultado.response.text();
     const json = JSON.parse(texto_resposta.replace(/```json|```/g, '').trim());
@@ -92,7 +104,6 @@ Categorias: Alimentação, Transporte, Moradia, Saúde, Lazer, Educação, Vestu
 // SALVAR TRANSAÇÃO NO SUPABASE
 // ============================================================
 async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawInput = '') {
-  // Buscar ID da categoria
   const { data: categorias } = await supabase
     .from('categorias')
     .select('id, nome')
@@ -101,12 +112,13 @@ async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawIn
 
   const categoriaId = categorias?.[0]?.id || null;
 
-  // Se parcelado, cria múltiplas transações
   if (classificacao.parcelado && classificacao.total_parcelas > 1) {
     return await salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput);
   }
 
-  // Transação simples
+  // Usa data de Brasília
+  const dataBrasilia = getDataBrasilia();
+
   const { data, error } = await supabase
     .from('transacoes')
     .insert({
@@ -119,6 +131,7 @@ async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawIn
       raw_input:       rawInput,
       confianca_ia:    classificacao.confianca,
       parcelado:       false,
+      data_transacao:  dataBrasilia,
     })
     .select()
     .single();
@@ -133,7 +146,7 @@ async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawIn
 async function salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput) {
   const grupoParcela = crypto.randomUUID();
   const valorParcela = (classificacao.valor / classificacao.total_parcelas).toFixed(2);
-  const hoje = new Date();
+  const hoje = getAgoraBrasilia();
   const transacoes = [];
 
   for (let i = 1; i <= classificacao.total_parcelas; i++) {
@@ -173,11 +186,10 @@ async function salvarParcelas(usuarioId, classificacao, categoriaId, origem, raw
 async function verificarMetas(usuarioId, categoriaId) {
   if (!categoriaId) return null;
 
-  const agora = new Date();
+  const agora = getAgoraBrasilia();
   const mes = agora.getMonth() + 1;
   const ano = agora.getFullYear();
 
-  // Buscar meta da categoria
   const { data: meta } = await supabase
     .from('metas')
     .select('*')
@@ -189,7 +201,6 @@ async function verificarMetas(usuarioId, categoriaId) {
 
   if (!meta || meta.alerta_80) return null;
 
-  // Somar gastos do mês nessa categoria
   const { data: gastos } = await supabase
     .from('transacoes')
     .select('valor')
@@ -203,7 +214,6 @@ async function verificarMetas(usuarioId, categoriaId) {
   const percentual = (totalGasto / parseFloat(meta.valor_limite)) * 100;
 
   if (percentual >= 80) {
-    // Marcar alerta como enviado
     await supabase
       .from('metas')
       .update({ alerta_80: true })
