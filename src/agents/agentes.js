@@ -312,7 +312,70 @@ function iniciarAgentes(bot) {
     executarAgentesCustomizados(bot);
   }, { timezone: 'America/Sao_Paulo' });
 
+  // Recuperação de inativos — todo dia às 19h
+  cron.schedule('0 19 * * *', () => {
+    console.log('🦙 Verificando usuarios inativos...');
+    recuperarInativos(bot);
+  }, { timezone: 'America/Sao_Paulo' });
+
   console.log('🦙 Agentes Cuzco, Luna, Inti e customizados iniciados!');
+}
+
+// ============================================================
+// RECUPERAÇÃO DE USUÁRIOS INATIVOS
+// Usuários em trial que não registram há 3+ dias
+// ============================================================
+async function recuperarInativos(bot) {
+  const tresDiasAtras = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  tresDiasAtras.setDate(tresDiasAtras.getDate() - 3);
+
+  // Buscar usuários em trial ativos
+  const { data: usuarios } = await supabase
+    .from('usuarios')
+    .select('*')
+    .eq('plano', 'trial')
+    .eq('ativo', true)
+    .gt('trial_expira_em', new Date().toISOString());
+
+  if (!usuarios || usuarios.length === 0) return;
+
+  for (const usuario of usuarios) {
+    try {
+      // Verificar última transação
+      const { data: ultimaTransacao } = await supabase
+        .from('transacoes')
+        .select('criado_em')
+        .eq('usuario_id', usuario.id)
+        .order('criado_em', { ascending: false })
+        .limit(1)
+        .single();
+
+      const inativo = !ultimaTransacao ||
+        new Date(ultimaTransacao.criado_em) < tresDiasAtras;
+
+      if (!inativo) continue;
+
+      // Dias restantes do trial
+      const diasTrial = Math.ceil(
+        (new Date(usuario.trial_expira_em) - new Date()) / (1000 * 60 * 60 * 24)
+      );
+
+      const prompt = `
+Voce e o Cuzco, agente financeiro do Duartly. O usuario ${usuario.nome || 'amigo'} nao registra gastos ha 3 dias.
+Mande uma mensagem curta e bem humorada para trazer ele de volta. Sem markdown. Max 2 frases.
+Mencione que ele tem ${diasTrial} dias de trial restantes e que esta perdendo o controle das financas.
+Comece com: "🦙 Cuzco aqui!"
+`;
+      const resultado = await modeloConversa.generateContent(prompt);
+      const mensagem = resultado.response.text().trim();
+
+      await enviarMensagem(bot, usuario.telegram_id, mensagem);
+      console.log(`🦙 Mensagem de reativacao enviada para ${usuario.nome}`);
+
+    } catch (err) {
+      console.error(`Erro ao recuperar inativo ${usuario.telegram_id}:`, err);
+    }
+  }
 }
 
 module.exports = {
