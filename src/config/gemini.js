@@ -6,7 +6,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Modelo para classificação rápida de gastos
 const modeloClassificacao = genAI.getGenerativeModel({
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   generationConfig: {
     responseMimeType: 'application/json',
     temperature: 0.1,
@@ -14,7 +14,7 @@ const modeloClassificacao = genAI.getGenerativeModel({
 });
 
 const modeloConversa = genAI.getGenerativeModel({
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   generationConfig: {
     temperature: 0.7,
   }
