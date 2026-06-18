@@ -144,12 +144,39 @@ async function handleCallbackEditar(ctx) {
 
     const categoriaId = categorias?.[0]?.id || null;
 
-    await supabase.from('transacoes').update({
-      descricao:    novaClassificacao.descricao,
-      valor:        novaClassificacao.valor,
-      categoria_id: categoriaId,
-      atualizado_em: new Date().toISOString()
-    }).eq('id', transacaoId);
+    // Buscar a transacao para verificar se tem grupo_parcela
+    const { data: transacaoAtualizada } = await supabase
+      .from('transacoes')
+      .select('grupo_parcela, total_parcelas')
+      .eq('id', transacaoId)
+      .single();
+
+    if (transacaoAtualizada?.grupo_parcela) {
+      // Atualiza TODAS as parcelas do grupo com o novo valor por parcela
+      const { data: todasParcelas } = await supabase
+        .from('transacoes')
+        .select('id')
+        .eq('grupo_parcela', transacaoAtualizada.grupo_parcela)
+        .eq('cancelado', false);
+
+      const totalParcelas = todasParcelas?.length || 1;
+      const valorPorParcela = parseFloat((novaClassificacao.valor / totalParcelas).toFixed(2));
+
+      await supabase.from('transacoes').update({
+        valor:        valorPorParcela,
+        categoria_id: categoriaId,
+        atualizado_em: new Date().toISOString()
+      }).eq('grupo_parcela', transacaoAtualizada.grupo_parcela);
+
+    } else {
+      // Transacao simples — atualiza só ela
+      await supabase.from('transacoes').update({
+        descricao:    novaClassificacao.descricao,
+        valor:        novaClassificacao.valor,
+        categoria_id: categoriaId,
+        atualizado_em: new Date().toISOString()
+      }).eq('id', transacaoId);
+    }
 
     limparSessao(usuarioId);
 
