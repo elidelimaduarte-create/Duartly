@@ -28,45 +28,18 @@ function limparSessao(usuarioId) {
 async function handleEditar(ctx) {
   const usuarioId = ctx.usuario.id;
 
-  const { data: transacoes } = await supabase
-    .from('transacoes')
-    .select('*, categorias(nome, emoji)')
-    .eq('usuario_id', usuarioId)
-    .eq('cancelado', false)
-    .order('criado_em', { ascending: false })
-    .limit(8);
-
-  if (!transacoes || transacoes.length === 0) {
-    await ctx.reply('🦙 Nenhum lancamento encontrado!');
-    return;
-  }
-
-  // Mostrar só o primeiro de cada grupo de parcelas
-  const vistos = new Set();
-  const unicos = transacoes.filter(t => {
-    if (t.grupo_parcela) {
-      if (vistos.has(t.grupo_parcela)) return false;
-      vistos.add(t.grupo_parcela);
-    }
-    return true;
-  });
-
-  const botoes = unicos.slice(0, 5).map(t => {
-    const emoji = t.categorias?.emoji || '📌';
-    const desc = t.descricao.replace(/\s*\(\d+\/\d+\)/, '').substring(0, 20);
-    const valor = parseFloat(t.valor).toFixed(2).replace('.', ',');
-    const ehParcela = t.grupo_parcela ? ' 💳' : '';
-    return [{
-      text: `${emoji} ${desc}${ehParcela} — R$ ${valor}`,
-      callback_data: `editar_sel_${t.id}`
-    }];
-  });
-
-  botoes.push([{ text: '❌ Cancelar', callback_data: 'editar_cancelar' }]);
-
   await ctx.reply(
-    `✏️ Qual lancamento voce quer gerenciar?\n\n💳 = parcelamento`,
-    { reply_markup: { inline_keyboard: botoes } }
+    `✏️ Gerenciar lancamentos\n\nO que voce quer fazer?`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🕐 Ver ultimos lancamentos', callback_data: 'editar_listar_recentes' }],
+          [{ text: '🔍 Buscar por descricao', callback_data: 'editar_buscar' }],
+          [{ text: '📅 Buscar por data', callback_data: 'editar_buscar_data' }],
+          [{ text: '❌ Cancelar', callback_data: 'editar_cancelar' }],
+        ]
+      }
+    }
   );
 }
 
@@ -83,6 +56,43 @@ async function handleCallbackEditar(ctx) {
   if (data === 'editar_cancelar') {
     await ctx.editMessageText('🦙 Operacao cancelada!');
     limparSessao(usuarioId);
+    return;
+  }
+
+  // ── LISTAR RECENTES
+  if (data === 'editar_listar_recentes') {
+    const { data: transacoes } = await supabase
+      .from('transacoes').select('*, categorias(nome, emoji)')
+      .eq('usuario_id', usuarioId).eq('cancelado', false)
+      .order('criado_em', { ascending: false }).limit(8);
+
+    if (!transacoes || transacoes.length === 0) {
+      await ctx.editMessageText('🦙 Nenhum lancamento encontrado!');
+      return;
+    }
+
+    await ctx.editMessageText(
+      `✏️ Ultimos lancamentos:\n\n💳 = parcelamento`,
+      { reply_markup: { inline_keyboard: montarBotoesTransacoes(transacoes) } }
+    );
+    return;
+  }
+
+  // ── BUSCAR POR DESCRIÇÃO
+  if (data === 'editar_buscar') {
+    salvarSessao(usuarioId, { etapa: 'aguardando_busca_descricao' });
+    await ctx.editMessageText(
+      `🔍 Digite o nome do lancamento que quer buscar:\n\nEx: "iFood", "Nike", "Mercado"`
+    );
+    return;
+  }
+
+  // ── BUSCAR POR DATA
+  if (data === 'editar_buscar_data') {
+    salvarSessao(usuarioId, { etapa: 'aguardando_busca_data' });
+    await ctx.editMessageText(
+      `📅 Digite a data do lancamento:\n\nFormatos aceitos:\n"15/05" ou "15/05/2026"`
+    );
     return;
   }
 
@@ -379,18 +389,112 @@ async function handleCallbackEditar(ctx) {
 }
 
 // ============================================================
-// HANDLER TEXTO durante edição de valor
+// HELPER — Montar botões de transações
+// ============================================================
+function montarBotoesTransacoes(transacoes) {
+  const vistos = new Set();
+  const unicos = transacoes.filter(t => {
+    if (t.grupo_parcela) {
+      if (vistos.has(t.grupo_parcela)) return false;
+      vistos.add(t.grupo_parcela);
+    }
+    return true;
+  });
+
+  const botoes = unicos.slice(0, 6).map(t => {
+    const emoji = t.categorias?.emoji || '📌';
+    const desc = t.descricao.replace(/\s*\(\d+\/\d+\)/, '').substring(0, 18);
+    const valor = parseFloat(t.valor).toFixed(2).replace('.', ',');
+    const data = t.data_transacao ? t.data_transacao.split('-').reverse().slice(0, 2).join('/') : '';
+    const ehParcela = t.grupo_parcela ? '💳 ' : '';
+    return [{
+      text: `${ehParcela}${emoji} ${desc} ${data} R$${valor}`,
+      callback_data: `editar_sel_${t.id}`
+    }];
+  });
+
+  botoes.push([{ text: '❌ Cancelar', callback_data: 'editar_cancelar' }]);
+  return botoes;
+}
+
+// ============================================================
+// HANDLER TEXTO durante edição
 // ============================================================
 async function handleTextoEditar(ctx) {
   const usuarioId = ctx.usuario.id;
   const sessao = buscarSessao(usuarioId);
 
-  if (!sessao || sessao.etapa !== 'aguardando_novo_valor') return false;
+  if (!sessao) return false;
+
+  // ── BUSCA POR DESCRIÇÃO
+  if (sessao.etapa === 'aguardando_busca_descricao') {
+    const busca = ctx.message.text;
+    const { data: transacoes } = await supabase
+      .from('transacoes').select('*, categorias(nome, emoji)')
+      .eq('usuario_id', usuarioId).eq('cancelado', false)
+      .ilike('descricao', `%${busca}%`)
+      .order('data_transacao', { ascending: false }).limit(8);
+
+    if (!transacoes || transacoes.length === 0) {
+      await ctx.reply(
+        `🦙 Nenhum lancamento encontrado com "${busca}".\n\nTenta outra palavra:`,
+        { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'editar_cancelar' }]] } }
+      );
+      return true;
+    }
+
+    limparSessao(usuarioId);
+    await ctx.reply(
+      `🔍 Resultados para "${busca}":`,
+      { reply_markup: { inline_keyboard: montarBotoesTransacoes(transacoes) } }
+    );
+    return true;
+  }
+
+  // ── BUSCA POR DATA
+  if (sessao.etapa === 'aguardando_busca_data') {
+    const texto = ctx.message.text.trim();
+    let dataISO;
+
+    try {
+      const partes = texto.split('/');
+      const ano = partes[2] ? parseInt(partes[2]) : new Date().getFullYear();
+      const mes = String(partes[1]).padStart(2, '0');
+      const dia = String(partes[0]).padStart(2, '0');
+      dataISO = `${ano}-${mes}-${dia}`;
+    } catch {
+      await ctx.reply('🦙 Data invalida. Tenta: "15/05" ou "15/05/2026"');
+      return true;
+    }
+
+    const { data: transacoes } = await supabase
+      .from('transacoes').select('*, categorias(nome, emoji)')
+      .eq('usuario_id', usuarioId).eq('cancelado', false)
+      .eq('data_transacao', dataISO)
+      .order('criado_em', { ascending: false });
+
+    if (!transacoes || transacoes.length === 0) {
+      await ctx.reply(
+        `🦙 Nenhum lancamento em ${texto}.\n\nTenta outra data:`,
+        { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'editar_cancelar' }]] } }
+      );
+      return true;
+    }
+
+    limparSessao(usuarioId);
+    await ctx.reply(
+      `📅 Lancamentos em ${texto}:`,
+      { reply_markup: { inline_keyboard: montarBotoesTransacoes(transacoes) } }
+    );
+    return true;
+  }
+
+  // ── EDIÇÃO DE VALOR
+  if (sessao.etapa !== 'aguardando_novo_valor') return false;
 
   const texto = ctx.message.text;
   const transacaoId = sessao.transacaoId;
 
-  // Buscar transacao atual para fallback de descricao
   const { data: transacaoAtual } = await supabase
     .from('transacoes').select('*, categorias(nome)').eq('id', transacaoId).single();
 
