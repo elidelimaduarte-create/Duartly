@@ -12,6 +12,7 @@ const { handleRelatorio } = require('./handlers/relatorioHandler');
 const { middlewareAcesso, handleAssinar, handleConvite, handleCancelar, handleCallbackCancelamento, handleStartComConvite, handleStartNormal } = require('./handlers/acessoHandler');
 const { handleEditar, handleCallbackEditar, handleTextoEditar } = require('./handlers/editarHandler');
 const { iniciarOnboarding, verificarOnboarding, handleCallbackOnboarding, ehUsuarioNovo } = require('./handlers/onboardingHandler');
+const { handleContas, handleCallbackContas, handleCallbackContasCategoria, handleTextoContas } = require('./handlers/contasHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
@@ -76,6 +77,7 @@ bot.command('meta',      handleDefinirMeta);
 bot.command('metas',     handleVerMetas);
 bot.command('agente',    handleAgente);
 bot.command('relatorio', handleRelatorio);
+bot.command('contas',    handleContas);
 bot.command('assinar',   handleAssinar);
 bot.command('convite',   handleConvite);
 bot.command('cancelar',  handleCancelar);
@@ -94,6 +96,7 @@ bot.on('text', async (ctx) => {
   if (await handleTextoAgente(ctx)) return;
   if (await handleTextoCartao(ctx)) return;
   if (await handleTextoEditar(ctx)) return;
+  if (await handleTextoContas(ctx)) return;
 
   const prompt = `Analise a mensagem e responda APENAS com JSON valido.
 Mensagem: "${texto}"
@@ -166,6 +169,8 @@ bot.on('callback_query', async (ctx) => {
   if (data.startsWith('ac_'))         { await handleCallbackAgente(ctx); return; }
   if (data.startsWith('editar_'))     { await handleCallbackEditar(ctx); return; }
   if (data.startsWith('onboarding_')) { await handleCallbackOnboarding(ctx); return; }
+  if (data.startsWith('contas_cat_')) { await handleCallbackContasCategoria(ctx); return; }
+  if (data.startsWith('contas_'))     { await handleCallbackContas(ctx); return; }
   if (data === 'usar_convite')        { await ctx.answerCbQuery(); await ctx.reply('Digite seu codigo de convite:'); return; }
   if (data.startsWith('cartao_') || data.startsWith('venc_') || data.startsWith('parcela_') || data.startsWith('nome_')) {
     await handleCallbackCartao(ctx); return;
