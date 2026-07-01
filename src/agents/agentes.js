@@ -404,7 +404,7 @@ async function lembrarContasVencer(bot) {
 
   const { data: contas } = await supabase
     .from('contas_fixas')
-    .select('*, usuarios(telegram_id, nome)')
+    .select('*, usuarios(telegram_id, nome, id)')
     .eq('ativo', true);
 
   if (!contas || contas.length === 0) return;
@@ -413,7 +413,7 @@ async function lembrarContasVencer(bot) {
   contas.forEach(c => {
     const tid = c.usuarios?.telegram_id;
     if (!tid) return;
-    if (!porUsuario[tid]) porUsuario[tid] = { usuario: c.usuarios, contasUsuario: [], usuarioId: c.usuario_id };
+    if (!porUsuario[tid]) porUsuario[tid] = { contasUsuario: [], usuarioId: c.usuario_id };
     porUsuario[tid].contasUsuario.push(c);
   });
 
@@ -428,31 +428,64 @@ async function lembrarContasVencer(bot) {
 
       const pagasIds = new Set(pagas?.map(p => p.conta_id) || []);
 
-      const alertas = contasUsuario.filter(c => {
-        if (pagasIds.has(c.id)) return false;
-        const diasAte = c.dia_vencimento - hoje;
-        return diasAte === 0 || diasAte === 1 || diasAte === 3;
-      });
+      for (const conta of contasUsuario) {
+        if (pagasIds.has(conta.id)) continue;
 
-      if (alertas.length === 0) continue;
-
-      for (const conta of alertas) {
         const diasAte = conta.dia_vencimento - hoje;
-        const valor = conta.valor ? `R$ ${parseFloat(conta.valor).toFixed(2)}` : 'valor variavel';
+        const valor = conta.valor ? parseFloat(conta.valor) : null;
+        const valorTexto = valor ? `R$ ${valor.toFixed(2)}` : 'valor variavel';
 
-        let msg = '';
-        if (diasAte === 0) {
-          msg = `📅 Hoje e dia de pagar: ${conta.descricao} (${valor})\n\nJa pagou? Use /contas para confirmar!`;
-        } else if (diasAte === 1) {
-          msg = `⚠️ Amanha vence: ${conta.descricao} (${valor})\n\nNao esqueca! Use /contas para ver todas as contas.`;
-        } else {
-          msg = `🔔 ${conta.descricao} vence em 3 dias — ${valor}\n\nPlaneje-se! Use /contas para ver o status.`;
+        // ── DÉBITO AUTOMÁTICO — registra automaticamente no dia do vencimento
+        if (conta.debito_automatico && diasAte === 0 && valor) {
+          try {
+            const { data: transacao } = await supabase
+              .from('transacoes')
+              .insert({
+                usuario_id:    usuarioId,
+                categoria_id:  conta.categoria_id,
+                descricao:     conta.descricao,
+                valor:         valor,
+                tipo:          'gasto',
+                origem:        'debito_automatico',
+                data_transacao: agora.toISOString().split('T')[0],
+                cancelado:     false,
+              })
+              .select().single();
+
+            await supabase.from('contas_pagas').upsert({
+              conta_id:    conta.id,
+              usuario_id:  usuarioId,
+              valor_pago:  valor,
+              mes, ano,
+              transacao_id: transacao?.id,
+              pago_em:     agora.toISOString()
+            }, { onConflict: 'conta_id,mes,ano' });
+
+            await enviarMensagem(bot, telegramId,
+              `⚡ Debito automatico registrado!\n\n📋 ${conta.descricao} — ${valorTexto}\n\nJa lancado no seu historico. Use /contas para confirmar.`
+            );
+          } catch (err) {
+            console.error(`Erro ao registrar debito automatico ${conta.id}:`, err);
+          }
+          continue;
         }
 
-        await enviarMensagem(bot, telegramId, msg);
+        // ── LEMBRETE NORMAL — apenas para contas sem débito automático
+        if (!conta.debito_automatico) {
+          let msg = '';
+          if (diasAte === 0) {
+            msg = `📅 Hoje e dia de pagar: ${conta.descricao} (${valorTexto})\n\nJa pagou? Use /contas para confirmar!`;
+          } else if (diasAte === 1) {
+            msg = `⚠️ Amanha vence: ${conta.descricao} (${valorTexto})\n\nNao esqueca! Use /contas para ver todas as contas.`;
+          } else if (diasAte === 3) {
+            msg = `🔔 ${conta.descricao} vence em 3 dias — ${valorTexto}\n\nPlaneje-se! Use /contas para ver o status.`;
+          }
+
+          if (msg) await enviarMensagem(bot, telegramId, msg);
+        }
       }
     } catch (err) {
-      console.error(`Erro ao lembrar contas para ${telegramId}:`, err);
+      console.error(`Erro ao processar contas para ${telegramId}:`, err);
     }
   }
 }
