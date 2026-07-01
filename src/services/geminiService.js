@@ -1,458 +1,262 @@
-// src/agents/agentes.js
-const cron = require('node-cron');
+// src/services/geminiService.js
+const { modeloClassificacao, modeloConversa } = require('../config/gemini');
 const supabase = require('../config/supabase');
-const { modeloConversa } = require('../config/gemini');
 
 // ============================================================
-// HELPERS
+// DATA DE BRASÍLIA (UTC-3)
 // ============================================================
-async function buscarUsuariosAtivos() {
-  const { data } = await supabase.from('usuarios').select('*').eq('ativo', true);
-  return data || [];
+function getDataBrasilia() {
+  const agora = new Date();
+  // Ajusta para UTC-3
+  const brasilia = new Date(agora.getTime() - (3 * 60 * 60 * 1000));
+  return brasilia.toISOString().split('T')[0];
 }
 
-async function enviarMensagem(bot, telegramId, mensagem) {
+function getAgoraBrasilia() {
+  const agora = new Date();
+  return new Date(agora.getTime() - (3 * 60 * 60 * 1000));
+}
+
+// ============================================================
+// CLASSIFICAR GASTO EM TEXTO
+// ============================================================
+async function classificarGasto(texto) {
+  const hoje = getDataBrasilia();
+  const prompt = `
+Voce e um assistente financeiro brasileiro. Analise o texto abaixo e extraia as informacoes de gasto ou receita.
+Hoje e ${hoje} (horario de Brasilia).
+
+Texto: "${texto}"
+
+Responda APENAS com um JSON valido neste formato exato:
+{
+  "descricao": "Nome Do Gasto Com Iniciais Maiusculas",
+  "valor": 00.00,
+  "tipo": "gasto" ou "receita",
+  "categoria": "uma das categorias abaixo",
+  "parcelado": false,
+  "total_parcelas": null,
+  "valor_e_por_parcela": false,
+  "confianca": 0.00
+}
+
+CATEGORIAS (use exatamente como escrito):
+Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
+
+REGRAS DE PARCELAMENTO:
+Existem dois formatos. Identifique qual e usado:
+
+Formato A — valor e POR PARCELA: "Nx de Y" ou "N vezes de Y"
+  Ex: "5x de 51,05" -> valor=51.05, total_parcelas=5, valor_e_por_parcela=true
+  Ex: "3 vezes de 100" -> valor=100.00, total_parcelas=3, valor_e_por_parcela=true
+
+Formato B — valor e o TOTAL: "Y em Nx" ou "Y parcelado em N"
+  Ex: "300 em 3x" -> valor=300.00, total_parcelas=3, valor_e_por_parcela=false
+  Ex: "Nike 500 parcelado em 5" -> valor=500.00, total_parcelas=5, valor_e_por_parcela=false
+
+REGRAS DE CATEGORIAS:
+- Delivery: iFood, Rappi, Uber Eats, 99Food, James
+- Transporte: Uber, 99, taxi, onibus, metro, gasolina, combustivel, estacionamento
+- Mercado: supermercado, feira, atacado, Assai, Extra, Carrefour
+- Alimentacao: restaurante, lanchonete, padaria, cafe, almoco, jantar, pizza, hamburguer
+- Assinaturas: Spotify, Netflix, Amazon Prime, Disney+, YouTube, academia, plano, mensalidade
+- Saude: farmacia, remedio, medico, consulta, dentista, exame, academia
+- Vestuario: roupa, sapato, tenis, Nike, Adidas, camiseta, vestido, calcado
+- Receita: salario, renda, freelance, recebi, pagamento recebido, transferencia recebida
+
+OUTRAS REGRAS:
+- Descricao: capitalize iniciais, remova valores do nome (ex: "Nike" nao "Nike 300")
+- Valores: "18,50" = 18.50 | "1.200" = 1200.00 | "1.200,50" = 1200.50
+- Se so tiver valor sem descricao, descricao = "Gasto"
+- Se nao identificar valor, retorne valor=null
+- confianca: 0.0 a 1.0
+`;
+
   try {
-    await bot.telegram.sendMessage(telegramId, mensagem);
+    const resultado = await modeloClassificacao.generateContent(prompt);
+    const texto_resposta = resultado.response.text();
+    const json = JSON.parse(texto_resposta.replace(/```json|```/g, '').trim());
+    return json;
   } catch (err) {
-    console.error(`Erro ao enviar para ${telegramId}:`, err.message);
+    console.error('Erro ao classificar gasto:', err);
+    return null;
   }
 }
 
 // ============================================================
-// CUZCO — Agente Diário
+// CLASSIFICAR GASTO DE IMAGEM (CUPOM)
 // ============================================================
-async function executarCuzco(bot) {
-  const usuarios = await buscarUsuariosAtivos();
-  for (const usuario of usuarios) {
-    try { await analisarDiaCuzco(bot, usuario); }
-    catch (err) { console.error(`Erro Cuzco para ${usuario.telegram_id}:`, err); }
-  }
-}
-
-async function analisarDiaCuzco(bot, usuario) {
-  const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-  const { data: gastosHoje } = await supabase
-    .from('transacoes')
-    .select('*, categorias(nome, emoji)')
-    .eq('usuario_id', usuario.id)
-    .eq('data_transacao', hoje)
-    .eq('tipo', 'gasto')
-    .eq('cancelado', false);
-
-  if (!gastosHoje || gastosHoje.length === 0) {
-    await enviarMensagem(bot, usuario.telegram_id,
-      `🦙 Cuzco aqui! Nenhum gasto registrado hoje. Dia economico ou esqueceu de anotar? Me manda seus gastos!`
-    );
-    return;
-  }
-
-  const totalHoje = gastosHoje.reduce((a, t) => a + parseFloat(t.valor), 0);
-
-  const trintaDiasAtras = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
-
-  const { data: gastosRecentes } = await supabase
-    .from('transacoes')
-    .select('valor, data_transacao')
-    .eq('usuario_id', usuario.id)
-    .eq('tipo', 'gasto')
-    .eq('cancelado', false)
-    .gte('data_transacao', trintaDiasAtras.toISOString().split('T')[0])
-    .lt('data_transacao', hoje);
-
-  const diasComGasto = new Set(gastosRecentes?.map(t => t.data_transacao) || []).size;
-  const totalRecente = gastosRecentes?.reduce((a, t) => a + parseFloat(t.valor), 0) || 0;
-  const mediaDiaria = diasComGasto > 0 ? totalRecente / diasComGasto : 0;
-  const acimaDaMedia = mediaDiaria > 0 && totalHoje > mediaDiaria * 1.5;
-
-  const resumoGastos = gastosHoje.map(t =>
-    `${t.categorias?.emoji || '📌'} ${t.descricao}: R$ ${t.valor} (${t.categorias?.nome || 'Outros'})`
-  ).join('\n');
-
+async function classificarImagemCupom(imagemBase64, mimeType) {
   const prompt = `
-Voce e o Cuzco, agente financeiro diario do Duartly. Esperto, direto, ironico mas simpatico.
-Analise os gastos de hoje e mande mensagem curta (max 3 frases). Sem markdown.
-Usuario: ${usuario.nome || 'usuario'}
-Gastos: ${resumoGastos}
-Total hoje: R$ ${totalHoje.toFixed(2)}
-Media 30 dias: R$ ${mediaDiaria.toFixed(2)}
-Acima da media: ${acimaDaMedia ? 'SIM!' : 'nao'}
-${acimaDaMedia ? 'ALERTE sobre gastos acima do normal!' : 'Faca resumo simpatico.'}
-Comece com: "🦙 Cuzco aqui!"
-`;
+Voce e um assistente financeiro brasileiro. Analise esta imagem de cupom fiscal ou comprovante de pagamento.
 
-  const resultado = await modeloConversa.generateContent(prompt);
-  await enviarMensagem(bot, usuario.telegram_id, resultado.response.text().trim());
+Extraia TODAS as informacoes relevantes e responda APENAS com um JSON valido:
+{
+  "descricao": "nome do estabelecimento ou produto principal",
+  "valor": 00.00,
+  "tipo": "gasto",
+  "categoria": "categoria correta",
+  "parcelado": false,
+  "total_parcelas": null,
+  "confianca": 0.00,
+  "itens": ["item1", "item2"]
 }
 
-// ============================================================
-// LUNA — Agente Quinzenal
-// ============================================================
-async function executarLuna(bot) {
-  const usuarios = await buscarUsuariosAtivos();
-  for (const usuario of usuarios) {
-    try { await analisarQuinzenaLuna(bot, usuario); }
-    catch (err) { console.error(`Erro Luna para ${usuario.telegram_id}:`, err); }
+Categorias: Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
+`;
+
+  try {
+    const resultado = await modeloClassificacao.generateContent([
+      prompt,
+      { inlineData: { mimeType, data: imagemBase64 } }
+    ]);
+    const texto_resposta = resultado.response.text();
+    const json = JSON.parse(texto_resposta.replace(/```json|```/g, '').trim());
+    return json;
+  } catch (err) {
+    console.error('Erro ao classificar imagem:', err);
+    return null;
   }
 }
 
-async function analisarQuinzenaLuna(bot, usuario) {
-  const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const quinzeDiasAtras = new Date(hoje);
-  quinzeDiasAtras.setDate(hoje.getDate() - 15);
+// ============================================================
+// SALVAR TRANSAÇÃO NO SUPABASE
+// ============================================================
+async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawInput = '') {
+  const { data: categorias } = await supabase
+    .from('categorias')
+    .select('id, nome')
+    .or(`usuario_id.eq.${usuarioId},padrao.eq.true`)
+    .ilike('nome', classificacao.categoria);
 
-  const { data: transacoes } = await supabase
+  const categoriaId = categorias?.[0]?.id || null;
+
+  if (classificacao.parcelado && classificacao.total_parcelas > 1) {
+    return await salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput);
+  }
+
+  // Usa data de Brasília
+  const dataBrasilia = getDataBrasilia();
+
+  const { data, error } = await supabase
     .from('transacoes')
-    .select('*, categorias(nome, emoji)')
-    .eq('usuario_id', usuario.id)
-    .eq('cancelado', false)
-    .eq('tipo', 'gasto')
-    .gte('data_transacao', quinzeDiasAtras.toISOString().split('T')[0])
-    .lte('data_transacao', hoje.toISOString().split('T')[0]);
+    .insert({
+      usuario_id:      usuarioId,
+      categoria_id:    categoriaId,
+      descricao:       classificacao.descricao,
+      valor:           classificacao.valor,
+      tipo:            classificacao.tipo,
+      origem:          origem,
+      raw_input:       rawInput,
+      confianca_ia:    classificacao.confianca,
+      parcelado:       false,
+      data_transacao:  dataBrasilia,
+    })
+    .select()
+    .single();
 
-  if (!transacoes || transacoes.length < 2) {
-    await enviarMensagem(bot, usuario.telegram_id,
-      `🌙 Luna aqui! Poucos dados nos ultimos 15 dias. Continue registrando seus gastos!`
-    );
-    return;
+  if (error) throw new Error(`Erro ao salvar: ${error.message}`);
+  return { transacoes: [data], parcelado: false };
+}
+
+// ============================================================
+// SALVAR PARCELAS
+// ============================================================
+async function salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput) {
+  const grupoParcela = crypto.randomUUID();
+
+  // Se valor_e_por_parcela=true, o valor já é por parcela
+  // Se false, o valor é o total e precisamos dividir
+  const valorParcela = classificacao.valor_e_por_parcela
+    ? parseFloat(classificacao.valor.toFixed(2))
+    : parseFloat((classificacao.valor / classificacao.total_parcelas).toFixed(2));
+
+  const hoje = getAgoraBrasilia();
+  const transacoes = [];
+
+  for (let i = 1; i <= classificacao.total_parcelas; i++) {
+    const dataTransacao = new Date(hoje);
+    dataTransacao.setMonth(hoje.getMonth() + (i - 1));
+
+    const { data, error } = await supabase
+      .from('transacoes')
+      .insert({
+        usuario_id:     usuarioId,
+        categoria_id:   categoriaId,
+        descricao:      `${classificacao.descricao} (${i}/${classificacao.total_parcelas})`,
+        valor:          valorParcela,
+        tipo:           'gasto',
+        origem:         origem,
+        raw_input:      rawInput,
+        confianca_ia:   classificacao.confianca,
+        parcelado:      true,
+        parcela_atual:  i,
+        total_parcelas: classificacao.total_parcelas,
+        grupo_parcela:  grupoParcela,
+        data_transacao: dataTransacao.toISOString().split('T')[0],
+      })
+      .select()
+      .single();
+
+    if (error) throw new Error(`Erro ao salvar parcela ${i}: ${error.message}`);
+    transacoes.push(data);
   }
 
-  const porCategoria = {};
-  transacoes.forEach(t => {
-    const cat = t.categorias?.nome || 'Outros';
-    if (!porCategoria[cat]) porCategoria[cat] = 0;
-    porCategoria[cat] += parseFloat(t.valor);
-  });
-
-  const resumo = Object.entries(porCategoria)
-    .sort((a, b) => b[1] - a[1])
-    .map(([cat, total]) => `${cat}: R$ ${total.toFixed(2)}`).join('\n');
-
-  const totalGasto = transacoes.reduce((a, t) => a + parseFloat(t.valor), 0);
-
-  const prompt = `
-Voce e a Luna, agente financeira quinzenal do Duartly. Analitica, serena, perspicaz.
-Analise 15 dias e identifique 2-3 tendencias. Sem markdown. Max 4 frases.
-Usuario: ${usuario.nome || 'usuario'}
-Total: R$ ${totalGasto.toFixed(2)}
-Por categoria: ${resumo}
-Comece com: "🌙 Luna aqui!"
-Termine sugerindo uma acao pratica.
-`;
-
-  const resultado = await modeloConversa.generateContent(prompt);
-  await enviarMensagem(bot, usuario.telegram_id, resultado.response.text().trim());
+  return { transacoes, parcelado: true, total_parcelas: classificacao.total_parcelas, valor_parcela: valorParcela };
 }
 
 // ============================================================
-// INTI — Agente Mensal
+// VERIFICAR METAS E ALERTAR
 // ============================================================
-async function executarInti(bot) {
-  const usuarios = await buscarUsuariosAtivos();
-  for (const usuario of usuarios) {
-    try { await analisarMesInti(bot, usuario); }
-    catch (err) { console.error(`Erro Inti para ${usuario.telegram_id}:`, err); }
-  }
-}
+async function verificarMetas(usuarioId, categoriaId) {
+  if (!categoriaId) return null;
 
-async function analisarMesInti(bot, usuario) {
-  const agora = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const mesAnterior = new Date(agora.getFullYear(), agora.getMonth() - 1, 1);
-  const inicioMes = mesAnterior.toISOString().split('T')[0];
-  const fimMes = new Date(agora.getFullYear(), agora.getMonth(), 0).toISOString().split('T')[0];
-
-  const { data: transacoes } = await supabase
-    .from('transacoes')
-    .select('*, categorias(nome, emoji)')
-    .eq('usuario_id', usuario.id)
-    .eq('cancelado', false)
-    .gte('data_transacao', inicioMes)
-    .lte('data_transacao', fimMes);
-
-  if (!transacoes || transacoes.length < 2) {
-    await enviarMensagem(bot, usuario.telegram_id,
-      `☀️ Inti aqui! Dados insuficientes do mes anterior. Continue registrando!`
-    );
-    return;
-  }
-
-  const gastos = transacoes.filter(t => t.tipo === 'gasto');
-  const receitas = transacoes.filter(t => t.tipo === 'receita');
-  const totalGastos = gastos.reduce((a, t) => a + parseFloat(t.valor), 0);
-  const totalReceitas = receitas.reduce((a, t) => a + parseFloat(t.valor), 0);
-  const saldo = totalReceitas - totalGastos;
-
-  const porCategoria = {};
-  gastos.forEach(t => {
-    const cat = t.categorias?.nome || 'Outros';
-    if (!porCategoria[cat]) porCategoria[cat] = 0;
-    porCategoria[cat] += parseFloat(t.valor);
-  });
-
-  const topCategorias = Object.entries(porCategoria)
-    .sort((a, b) => b[1] - a[1]).slice(0, 3)
-    .map(([cat, total]) => `${cat}: R$ ${total.toFixed(2)}`).join(', ');
-
-  const nomeMes = mesAnterior.toLocaleString('pt-BR', { month: 'long' });
-
-  const prompt = `
-Voce e o Inti, agente financeiro mensal do Duartly. Grandioso, visionario, estrategico.
-Panorama de ${nomeMes} e projecao para o mes atual. Sem markdown. Max 5 frases.
-Usuario: ${usuario.nome || 'usuario'}
-Receitas: R$ ${totalReceitas.toFixed(2)} | Gastos: R$ ${totalGastos.toFixed(2)} | Saldo: R$ ${saldo.toFixed(2)}
-Top: ${topCategorias}
-Comece com: "☀️ Inti aqui! Fechamento de ${nomeMes}:"
-Termine com estrategia para o mes atual.
-`;
-
-  const resultado = await modeloConversa.generateContent(prompt);
-  await enviarMensagem(bot, usuario.telegram_id, resultado.response.text().trim());
-}
-
-// ============================================================
-// AGENTES CUSTOMIZADOS
-// ============================================================
-async function executarAgentesCustomizados(bot) {
-  const agoraBrasilia = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const horaAtual = agoraBrasilia.getHours();
-  const diaAtual = agoraBrasilia.getDay();
-  const diaDoMes = agoraBrasilia.getDate();
-  const hoje = agoraBrasilia.toISOString().split('T')[0];
-  const mes = agoraBrasilia.getMonth() + 1;
-  const ano = agoraBrasilia.getFullYear();
-
-  const { data: agentes } = await supabase
-    .from('agentes_customizados')
-    .select('*, usuarios(telegram_id, nome)')
-    .eq('ativo', true);
-
-  if (!agentes || agentes.length === 0) return;
-
-  for (const agente of agentes) {
-    try {
-      const config = agente.config;
-      const telegramId = agente.usuarios?.telegram_id;
-      if (!telegramId) continue;
-
-      if (agente.tipo === 'relatorio_agendado' && config.hora === horaAtual) {
-        const deveDisparar =
-          config.frequencia === 'diario' ||
-          (config.frequencia === 'semanal' && diaAtual === 1) ||
-          (config.frequencia === 'mensal' && diaDoMes === 1);
-
-        if (deveDisparar) {
-          const { data: transacoes } = await supabase
-            .from('transacoes').select('valor')
-            .eq('usuario_id', agente.usuario_id).eq('cancelado', false).eq('tipo', 'gasto')
-            .gte('data_transacao', `${ano}-${String(mes).padStart(2,'0')}-01`)
-            .lte('data_transacao', hoje);
-
-          const total = transacoes?.reduce((a, t) => a + parseFloat(t.valor), 0) || 0;
-
-          const prompt = `Voce e o Duartly. Relatorio rapido e simpatico. Sem markdown. Max 3 frases.
-Usuario: ${agente.usuarios?.nome || 'usuario'} | Total mes: R$ ${total.toFixed(2)} | Lancamentos: ${transacoes?.length || 0}
-Comece com: "📊 Relatorio Duartly!"`;
-
-          const resultado = await modeloConversa.generateContent(prompt);
-          await enviarMensagem(bot, telegramId, resultado.response.text().trim());
-          await supabase.from('agentes_customizados').update({ ultimo_disparo: new Date().toISOString() }).eq('id', agente.id);
-        }
-      }
-
-      if (agente.tipo === 'lembrete_registro' && config.hora === horaAtual) {
-        const { data: gastosHoje } = await supabase
-          .from('transacoes').select('id')
-          .eq('usuario_id', agente.usuario_id).eq('data_transacao', hoje).eq('cancelado', false);
-
-        if (!gastosHoje || gastosHoje.length === 0) {
-          await enviarMensagem(bot, telegramId,
-            `⏰ Oi! Voce ainda nao registrou nenhum gasto hoje. Esqueceu de anotar? Me manda seus gastos! 🦙`
-          );
-        }
-        await supabase.from('agentes_customizados').update({ ultimo_disparo: new Date().toISOString() }).eq('id', agente.id);
-      }
-
-    } catch (err) {
-      console.error(`Erro agente customizado ${agente.id}:`, err);
-    }
-  }
-}
-
-// ============================================================
-// INICIAR CRON JOBS
-// ============================================================
-function iniciarAgentes(bot) {
-  // Cuzco — todo dia às 20h
-  cron.schedule('0 20 * * *', () => {
-    console.log('🦙 Cuzco iniciando...');
-    executarCuzco(bot);
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Luna — dias 15 e último do mês às 18h
-  cron.schedule('0 18 15,28,29,30,31 * *', () => {
-    const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000);
-    const ultimoDia = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
-    if (hoje.getDate() === 15 || hoje.getDate() === ultimoDia) {
-      console.log('🌙 Luna iniciando...');
-      executarLuna(bot);
-    }
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Inti — todo dia 1 às 9h
-  cron.schedule('0 9 1 * *', () => {
-    console.log('☀️ Inti iniciando...');
-    executarInti(bot);
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Agentes customizados — toda hora cheia
-  cron.schedule('0 * * * *', () => {
-    console.log('🤖 Verificando agentes customizados...');
-    executarAgentesCustomizados(bot);
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Recuperação de inativos — todo dia às 19h
-  cron.schedule('0 19 * * *', () => {
-    console.log('🦙 Verificando usuarios inativos...');
-    recuperarInativos(bot);
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Lembretes de contas — todo dia às 9h
-  cron.schedule('0 9 * * *', () => {
-    console.log('📅 Verificando contas a vencer...');
-    lembrarContasVencer(bot);
-  }, { timezone: 'America/Sao_Paulo' });
-
-  console.log('🦙 Agentes Cuzco, Luna, Inti e customizados iniciados!');
-}
-
-// ============================================================
-// RECUPERAÇÃO DE USUÁRIOS INATIVOS
-// Usuários em trial que não registram há 3+ dias
-// ============================================================
-async function recuperarInativos(bot) {
-  const tresDiasAtras = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  tresDiasAtras.setDate(tresDiasAtras.getDate() - 3);
-
-  // Buscar usuários em trial ativos
-  const { data: usuarios } = await supabase
-    .from('usuarios')
-    .select('*')
-    .eq('plano', 'trial')
-    .eq('ativo', true)
-    .gt('trial_expira_em', new Date().toISOString());
-
-  if (!usuarios || usuarios.length === 0) return;
-
-  for (const usuario of usuarios) {
-    try {
-      // Verificar última transação
-      const { data: ultimaTransacao } = await supabase
-        .from('transacoes')
-        .select('criado_em')
-        .eq('usuario_id', usuario.id)
-        .order('criado_em', { ascending: false })
-        .limit(1)
-        .single();
-
-      const inativo = !ultimaTransacao ||
-        new Date(ultimaTransacao.criado_em) < tresDiasAtras;
-
-      if (!inativo) continue;
-
-      // Dias restantes do trial
-      const diasTrial = Math.ceil(
-        (new Date(usuario.trial_expira_em) - new Date()) / (1000 * 60 * 60 * 24)
-      );
-
-      const prompt = `
-Voce e o Cuzco, agente financeiro do Duartly. O usuario ${usuario.nome || 'amigo'} nao registra gastos ha 3 dias.
-Mande uma mensagem curta e bem humorada para trazer ele de volta. Sem markdown. Max 2 frases.
-Mencione que ele tem ${diasTrial} dias de trial restantes e que esta perdendo o controle das financas.
-Comece com: "🦙 Cuzco aqui!"
-`;
-      const resultado = await modeloConversa.generateContent(prompt);
-      const mensagem = resultado.response.text().trim();
-
-      await enviarMensagem(bot, usuario.telegram_id, mensagem);
-      console.log(`🦙 Mensagem de reativacao enviada para ${usuario.nome}`);
-
-    } catch (err) {
-      console.error(`Erro ao recuperar inativo ${usuario.telegram_id}:`, err);
-    }
-  }
-}
-
-module.exports = {
-  iniciarAgentes,
-  executarCuzco,
-  executarLuna,
-  executarInti,
-  executarAgentesCustomizados,
-  lembrarContasVencer
-};
-
-// ============================================================
-// LEMBRETE DE CONTAS A VENCER
-// ============================================================
-async function lembrarContasVencer(bot) {
-  const agora = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const hoje = agora.getDate();
+  const agora = getAgoraBrasilia();
   const mes = agora.getMonth() + 1;
   const ano = agora.getFullYear();
 
-  const { data: contas } = await supabase
-    .from('contas_fixas')
-    .select('*, usuarios(telegram_id, nome)')
-    .eq('ativo', true);
+  const { data: meta } = await supabase
+    .from('metas')
+    .select('*')
+    .eq('usuario_id', usuarioId)
+    .eq('categoria_id', categoriaId)
+    .eq('mes', mes)
+    .eq('ano', ano)
+    .single();
 
-  if (!contas || contas.length === 0) return;
+  if (!meta || meta.alerta_80) return null;
 
-  const porUsuario = {};
-  contas.forEach(c => {
-    const tid = c.usuarios?.telegram_id;
-    if (!tid) return;
-    if (!porUsuario[tid]) porUsuario[tid] = { usuario: c.usuarios, contasUsuario: [], usuarioId: c.usuario_id };
-    porUsuario[tid].contasUsuario.push(c);
-  });
+  const { data: gastos } = await supabase
+    .from('transacoes')
+    .select('valor')
+    .eq('usuario_id', usuarioId)
+    .eq('categoria_id', categoriaId)
+    .eq('tipo', 'gasto')
+    .eq('cancelado', false)
+    .gte('data_transacao', `${ano}-${String(mes).padStart(2, '0')}-01`);
 
-  for (const [telegramId, { contasUsuario, usuarioId }] of Object.entries(porUsuario)) {
-    try {
-      const { data: pagas } = await supabase
-        .from('contas_pagas')
-        .select('conta_id')
-        .eq('usuario_id', usuarioId)
-        .eq('mes', mes)
-        .eq('ano', ano);
+  const totalGasto = gastos?.reduce((acc, t) => acc + parseFloat(t.valor), 0) || 0;
+  const percentual = (totalGasto / parseFloat(meta.valor_limite)) * 100;
 
-      const pagasIds = new Set(pagas?.map(p => p.conta_id) || []);
+  if (percentual >= 80) {
+    await supabase
+      .from('metas')
+      .update({ alerta_80: true })
+      .eq('id', meta.id);
 
-      const alertas = contasUsuario.filter(c => {
-        if (pagasIds.has(c.id)) return false;
-        const diasAte = c.dia_vencimento - hoje;
-        return diasAte === 0 || diasAte === 1 || diasAte === 3;
-      });
-
-      if (alertas.length === 0) continue;
-
-      for (const conta of alertas) {
-        const diasAte = conta.dia_vencimento - hoje;
-        const valor = conta.valor ? `R$ ${parseFloat(conta.valor).toFixed(2)}` : 'valor variavel';
-
-        let msg = '';
-        if (diasAte === 0) {
-          msg = `📅 Hoje e dia de pagar: ${conta.descricao} (${valor})\n\nJa pagou? Use /contas para confirmar!`;
-        } else if (diasAte === 1) {
-          msg = `⚠️ Amanha vence: ${conta.descricao} (${valor})\n\nNao esqueca! Use /contas para ver todas as contas.`;
-        } else {
-          msg = `🔔 ${conta.descricao} vence em 3 dias — ${valor}\n\nPlaneje-se! Use /contas para ver o status.`;
-        }
-
-        await enviarMensagem(bot, telegramId, msg);
-      }
-    } catch (err) {
-      console.error(`Erro ao lembrar contas para ${telegramId}:`, err);
-    }
+    return {
+      percentual: Math.round(percentual),
+      totalGasto,
+      limite: meta.valor_limite
+    };
   }
+
+  return null;
 }
+
+module.exports = {
+  classificarGasto,
+  classificarImagemCupom,
+  salvarTransacao,
+  verificarMetas
+};
