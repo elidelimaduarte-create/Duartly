@@ -318,6 +318,12 @@ function iniciarAgentes(bot) {
     recuperarInativos(bot);
   }, { timezone: 'America/Sao_Paulo' });
 
+  // Lembretes de contas — todo dia às 9h
+  cron.schedule('0 9 * * *', () => {
+    console.log('📅 Verificando contas a vencer...');
+    lembrarContasVencer(bot);
+  }, { timezone: 'America/Sao_Paulo' });
+
   console.log('🦙 Agentes Cuzco, Luna, Inti e customizados iniciados!');
 }
 
@@ -383,5 +389,70 @@ module.exports = {
   executarCuzco,
   executarLuna,
   executarInti,
-  executarAgentesCustomizados
+  executarAgentesCustomizados,
+  lembrarContasVencer
 };
+
+// ============================================================
+// LEMBRETE DE CONTAS A VENCER
+// ============================================================
+async function lembrarContasVencer(bot) {
+  const agora = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const hoje = agora.getDate();
+  const mes = agora.getMonth() + 1;
+  const ano = agora.getFullYear();
+
+  const { data: contas } = await supabase
+    .from('contas_fixas')
+    .select('*, usuarios(telegram_id, nome)')
+    .eq('ativo', true);
+
+  if (!contas || contas.length === 0) return;
+
+  const porUsuario = {};
+  contas.forEach(c => {
+    const tid = c.usuarios?.telegram_id;
+    if (!tid) return;
+    if (!porUsuario[tid]) porUsuario[tid] = { usuario: c.usuarios, contasUsuario: [], usuarioId: c.usuario_id };
+    porUsuario[tid].contasUsuario.push(c);
+  });
+
+  for (const [telegramId, { contasUsuario, usuarioId }] of Object.entries(porUsuario)) {
+    try {
+      const { data: pagas } = await supabase
+        .from('contas_pagas')
+        .select('conta_id')
+        .eq('usuario_id', usuarioId)
+        .eq('mes', mes)
+        .eq('ano', ano);
+
+      const pagasIds = new Set(pagas?.map(p => p.conta_id) || []);
+
+      const alertas = contasUsuario.filter(c => {
+        if (pagasIds.has(c.id)) return false;
+        const diasAte = c.dia_vencimento - hoje;
+        return diasAte === 0 || diasAte === 1 || diasAte === 3;
+      });
+
+      if (alertas.length === 0) continue;
+
+      for (const conta of alertas) {
+        const diasAte = conta.dia_vencimento - hoje;
+        const valor = conta.valor ? `R$ ${parseFloat(conta.valor).toFixed(2)}` : 'valor variavel';
+
+        let msg = '';
+        if (diasAte === 0) {
+          msg = `📅 Hoje e dia de pagar: ${conta.descricao} (${valor})\n\nJa pagou? Use /contas para confirmar!`;
+        } else if (diasAte === 1) {
+          msg = `⚠️ Amanha vence: ${conta.descricao} (${valor})\n\nNao esqueca! Use /contas para ver todas as contas.`;
+        } else {
+          msg = `🔔 ${conta.descricao} vence em 3 dias — ${valor}\n\nPlaneje-se! Use /contas para ver o status.`;
+        }
+
+        await enviarMensagem(bot, telegramId, msg);
+      }
+    } catch (err) {
+      console.error(`Erro ao lembrar contas para ${telegramId}:`, err);
+    }
+  }
+}
