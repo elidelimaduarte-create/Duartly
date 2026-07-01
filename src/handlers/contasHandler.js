@@ -416,26 +416,6 @@ async function handleTextoContas(ctx) {
     return true;
   }
 
-    // Buscar categorias
-    const { data: categorias } = await supabase
-      .from('categorias')
-      .select('id, nome, emoji')
-      .eq('padrao', true)
-      .eq('ativo', true)
-      .order('nome');
-
-    const botoes = [];
-    for (let i = 0; i < categorias.length; i += 3) {
-      botoes.push(categorias.slice(i, i + 3).map(c => ({
-        text: `${c.emoji} ${c.nome}`,
-        callback_data: `contas_cat_${c.id}`
-      })));
-    }
-
-    await ctx.reply('🏷️ Qual a categoria?', { reply_markup: { inline_keyboard: botoes } });
-    return true;
-  }
-
   // ── VALOR PAGO (valor diferente do padrão)
   if (sessao.etapa === 'aguardando_valor_pago') {
     const valor = parseFloat(texto.replace(',', '.'));
