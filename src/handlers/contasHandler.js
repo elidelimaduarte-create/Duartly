@@ -274,6 +274,33 @@ async function handleCallbackContas(ctx) {
     limparSessao(usuarioId);
     return;
   }
+
+  // ── DÉBITO AUTOMÁTICO
+  if (data === 'contas_debito_sim' || data === 'contas_debito_nao') {
+    const debitoAutomatico = data === 'contas_debito_sim';
+    const sessao = buscarSessao(usuarioId);
+    if (!sessao) { await ctx.editMessageText('🦙 Sessao expirada. Use /contas para recomecar.'); return; }
+
+    salvarSessao(usuarioId, { ...sessao, etapa: 'aguardando_categoria', debitoAutomatico });
+
+    const { data: categorias } = await supabase
+      .from('categorias')
+      .select('id, nome, emoji')
+      .eq('padrao', true)
+      .eq('ativo', true)
+      .order('nome');
+
+    const botoes = [];
+    for (let i = 0; i < categorias.length; i += 3) {
+      botoes.push(categorias.slice(i, i + 3).map(c => ({
+        text: `${c.emoji} ${c.nome}`,
+        callback_data: `contas_cat_${c.id}`
+      })));
+    }
+
+    await ctx.editMessageText('🏷️ Qual a categoria?', { reply_markup: { inline_keyboard: botoes } });
+    return;
+  }
 }
 
 // ============================================================
@@ -373,7 +400,21 @@ async function handleTextoContas(ctx) {
       }
     }
 
-    salvarSessao(usuarioId, { ...sessao, etapa: 'aguardando_categoria', valor });
+    salvarSessao(usuarioId, { ...sessao, etapa: 'aguardando_debito', valor });
+
+    await ctx.reply(
+      `💳 Como essa conta e paga?`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔔 Preciso ser avisado', callback_data: 'contas_debito_nao' }],
+            [{ text: '⚡ Debito automatico (so registrar)', callback_data: 'contas_debito_sim' }],
+          ]
+        }
+      }
+    );
+    return true;
+  }
 
     // Buscar categorias
     const { data: categorias } = await supabase
@@ -422,15 +463,17 @@ async function handleCallbackContasCategoria(ctx) {
   if (!data.startsWith('contas_cat_') || !sessao) return;
 
   const categoriaId = data.replace('contas_cat_', '');
+  const debitoAutomatico = sessao.debitoAutomatico || false;
 
   // Salvar conta
   const { error } = await supabase.from('contas_fixas').insert({
-    usuario_id:    usuarioId,
-    descricao:     sessao.descricao,
-    valor:         sessao.valor,
-    dia_vencimento: sessao.dia,
-    categoria_id:  categoriaId,
-    ativo:         true,
+    usuario_id:       usuarioId,
+    descricao:        sessao.descricao,
+    valor:            sessao.valor,
+    dia_vencimento:   sessao.dia,
+    categoria_id:     categoriaId,
+    debito_automatico: debitoAutomatico,
+    ativo:            true,
   });
 
   limparSessao(usuarioId);
@@ -444,8 +487,12 @@ async function handleCallbackContasCategoria(ctx) {
     ? `R$ ${parseFloat(sessao.valor).toFixed(2)}`
     : 'valor variavel';
 
+  const avisoTexto = debitoAutomatico
+    ? `⚡ Debito automatico — vou registrar no dia ${sessao.dia} automaticamente, sem te avisar.`
+    : `🔔 Vou te avisar 3 dias antes e no dia do vencimento!`;
+
   await ctx.editMessageText(
-    `✅ Conta cadastrada!\n\n📋 ${sessao.descricao}\n💰 ${valorTexto}\n📅 Vencimento: todo dia ${sessao.dia}\n\nVou te avisar 3 dias antes e no dia do vencimento! 🦙\n\nUse /contas para ver todas as suas contas.`
+    `✅ Conta cadastrada!\n\n📋 ${sessao.descricao}\n💰 ${valorTexto}\n📅 Vencimento: todo dia ${sessao.dia}\n\n${avisoTexto}\n\nUse /contas para ver todas as suas contas.`
   );
 }
 
