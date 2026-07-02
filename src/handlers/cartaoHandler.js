@@ -204,8 +204,13 @@ async function handleCallbackCartao(ctx) {
   // --- DIA DE VENCIMENTO ---
   if (data.startsWith('venc_') && data !== 'venc_outro') {
     const dia = parseInt(data.replace('venc_', ''));
-    salvarSessao(usuarioId, { ...sessao, etapa: 'primeira_parcela', diaVencimento: dia });
-    await perguntarPrimeiraParcela(ctx, dia);
+    if (sessao?.modo === 'cadastro_direto') {
+      salvarSessao(usuarioId, { ...sessao, etapa: 'nome_cartao', diaVencimento: dia });
+      await perguntarNomeCartao(ctx);
+    } else {
+      salvarSessao(usuarioId, { ...sessao, etapa: 'primeira_parcela', diaVencimento: dia });
+      await perguntarPrimeiraParcela(ctx, dia);
+    }
     return;
   }
 
@@ -236,8 +241,13 @@ async function handleCallbackCartao(ctx) {
       sessaoAtual.primeiraNoProximoMes
     );
 
-    salvarSessao(usuarioId, { ...sessaoAtual, cartao });
-    await finalizarParcelamento(ctx, cartao, sessaoAtual.primeiraNoProximoMes);
+    if (sessaoAtual.modo === 'cadastro_direto') {
+      limparSessao(usuarioId);
+      await ctx.editMessageText(`✅ Cartao ${cartao.nome} cadastrado! Vencimento dia ${cartao.dia_vencimento}.\n\nAgora use /fatura para importar sua fatura.`);
+    } else {
+      salvarSessao(usuarioId, { ...sessaoAtual, cartao });
+      await finalizarParcelamento(ctx, cartao, sessaoAtual.primeiraNoProximoMes);
+    }
     return;
   }
 }
@@ -257,8 +267,13 @@ async function handleTextoCartao(ctx) {
       await ctx.reply('Por favor, digite um dia valido entre 1 e 28:');
       return true;
     }
-    salvarSessao(usuarioId, { ...sessao, etapa: 'primeira_parcela', diaVencimento: dia });
-    await perguntarPrimeiraParcela(ctx, dia);
+    if (sessao.modo === 'cadastro_direto') {
+      salvarSessao(usuarioId, { ...sessao, etapa: 'aguardando_nome_texto', diaVencimento: dia });
+      await ctx.reply('Qual o nome do cartao? (ex: Nubank, Itau, Santander)');
+    } else {
+      salvarSessao(usuarioId, { ...sessao, etapa: 'primeira_parcela', diaVencimento: dia });
+      await perguntarPrimeiraParcela(ctx, dia);
+    }
     return true;
   }
 
@@ -270,16 +285,52 @@ async function handleTextoCartao(ctx) {
       sessao.diaVencimento,
       sessao.primeiraNoProximoMes
     );
-    salvarSessao(usuarioId, { ...sessao, cartao });
-    await finalizarParcelamento(ctx, cartao, sessao.primeiraNoProximoMes);
+    limparSessao(usuarioId);
+    if (sessao.modo === 'cadastro_direto') {
+      await ctx.reply(`✅ Cartao ${cartao.nome} cadastrado! Vencimento dia ${cartao.dia_vencimento}.\n\nAgora use /fatura para importar sua fatura.`);
+    } else {
+      salvarSessao(usuarioId, { ...sessao, cartao });
+      await finalizarParcelamento(ctx, cartao, sessao.primeiraNoProximoMes);
+    }
     return true;
   }
 
   return false;
 }
 
+// ============================================================
+// CADASTRAR CARTÃO DIRETO — /cartao
+// ============================================================
+async function handleCadastrarCartao(ctx) {
+  const usuarioId = ctx.usuario.id;
+  const cartoes = await buscarCartoes(usuarioId);
+
+  // Limpar qualquer sessão anterior
+  limparSessao(usuarioId);
+
+  // Salvar sessão de cadastro direto (sem classificacao)
+  salvarSessao(usuarioId, { etapa: 'novo_vencimento', classificacao: null, modo: 'cadastro_direto' });
+
+  let msg = cartoes.length > 0
+    ? `💳 Seus cartoes cadastrados:\n\n${cartoes.map(c => `• ${c.nome} (dia ${c.dia_vencimento})`).join('\n')}\n\n`
+    : '💳 Voce ainda nao tem cartoes cadastrados.\n\n';
+
+  msg += 'Qual o dia de vencimento do novo cartao?';
+
+  await ctx.reply(msg, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Dia 1',  callback_data: 'venc_1'  }, { text: 'Dia 5',  callback_data: 'venc_5'  }, { text: 'Dia 7',  callback_data: 'venc_7'  }],
+        [{ text: 'Dia 10', callback_data: 'venc_10' }, { text: 'Dia 12', callback_data: 'venc_12' }, { text: 'Dia 15', callback_data: 'venc_15' }],
+        [{ text: 'Dia 20', callback_data: 'venc_20' }, { text: 'Dia 25', callback_data: 'venc_25' }, { text: 'Dia 28', callback_data: 'venc_28' }],
+      ]
+    }
+  });
+}
+
 module.exports = {
   iniciarFluxoCartao,
+  handleCadastrarCartao,
   handleCallbackCartao,
   handleTextoCartao
 };
