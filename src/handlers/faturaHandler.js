@@ -139,44 +139,59 @@ async function handlePdfFatura(ctx) {
 
     if (pdfBuffer.length === 0) throw new Error('PDF vazio');
 
-    // Upload do PDF para Gemini Files API
+    // Upload do PDF para Gemini Files API (método resumable)
     console.log('Fazendo upload do PDF para Gemini Files API...');
-    const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${process.env.GEMINI_API_KEY}`;
 
-    const formData = new FormData();
-    const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
-    formData.append('file', blob, 'fatura.pdf');
-
-    const uploadResponse = await fetch(uploadUrl, {
-      method: 'POST',
-      body: pdfBuffer,
-      headers: {
-        'Content-Type': 'application/pdf',
-        'X-Goog-Upload-Command': 'upload, finalize',
-        'X-Goog-Upload-Header-Content-Length': pdfBuffer.length,
-        'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+    // Passo 1: Iniciar upload resumable
+    const initResponse = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: {
+          'X-Goog-Upload-Protocol': 'resumable',
+          'X-Goog-Upload-Command': 'start',
+          'X-Goog-Upload-Header-Content-Length': pdfBuffer.length,
+          'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file: { display_name: 'fatura.pdf' } })
       }
+    );
+
+    if (!initResponse.ok) throw new Error(`Erro ao iniciar upload: ${initResponse.status}`);
+    const uploadUri = initResponse.headers.get('x-goog-upload-url');
+    if (!uploadUri) throw new Error('Nao obteve upload URL');
+
+    // Passo 2: Fazer upload do arquivo
+    const uploadResponse = await fetch(uploadUri, {
+      method: 'POST',
+      headers: {
+        'Content-Length': pdfBuffer.length,
+        'X-Goog-Upload-Offset': '0',
+        'X-Goog-Upload-Command': 'upload, finalize',
+      },
+      body: pdfBuffer
     });
 
     if (!uploadResponse.ok) {
       const errText = await uploadResponse.text();
-      throw new Error(`Erro no upload para Gemini: ${uploadResponse.status} ${errText}`);
+      throw new Error(`Erro no upload: ${uploadResponse.status} ${errText}`);
     }
 
     const uploadData = await uploadResponse.json();
-    const fileUri = uploadData?.file?.uri;
-    const fileMimeType = uploadData?.file?.mimeType || 'application/pdf';
+    const fileUri = uploadData?.uri || uploadData?.file?.uri;
     console.log(`PDF enviado ao Gemini: ${fileUri}`);
 
     if (!fileUri) throw new Error('Gemini nao retornou URI do arquivo');
 
     // Aguardar processamento e verificar status
+    const fileName = uploadData?.name || uploadData?.file?.name;
     console.log('Aguardando processamento do arquivo...');
     let tentativas = 0;
     let fileReady = false;
     while (tentativas < 10) {
-      await new Promise(r => setTimeout(r, 3000));
-      const statusUrl = `https://generativelanguage.googleapis.com/v1beta/${uploadData.file.name}?key=${process.env.GEMINI_API_KEY}`;
+      await new Promise(r => setTimeout(r, 2000));
+      const statusUrl = `https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${process.env.GEMINI_API_KEY}`;
       const statusResp = await fetch(statusUrl);
       const statusData = await statusResp.json();
       console.log(`Status arquivo: ${statusData.state}`);
@@ -187,7 +202,7 @@ async function handlePdfFatura(ctx) {
     if (!fileReady) throw new Error('Timeout aguardando processamento do arquivo');
 
     // Preparar partes para o Gemini
-    const partes = [{ fileData: { mimeType: fileMimeType, fileUri } }];
+    const partes = [{ fileData: { mimeType: 'application/pdf', fileUri } }];
 
     // Enviar para Gemini
     const hoje = getDataBrasilia();
@@ -417,10 +432,9 @@ async function salvarLancamentos(ctx, sessao) {
 
         if (dupla && dupla.length > 0) { ignorados++; continue; }
 
-        await supabase.from('transacoes').insert({
+        const { error: insertError } = await supabase.from('transacoes').insert({
           usuario_id:      usuarioId,
           categoria_id:    categoriaId,
-          subcategoria_id: subcategoriaId,
           cartao_id:       cartaoId,
           descricao:       lanc.descricao,
           valor:           lanc.valor,
@@ -430,7 +444,12 @@ async function salvarLancamentos(ctx, sessao) {
           data_transacao:  dataLanc,
           cancelado:       false,
         });
-        adicionados++;
+        if (insertError) {
+          console.error('Erro insert lancamento:', insertError.message, JSON.stringify(lanc));
+          ignorados++;
+        } else {
+          adicionados++;
+        }
       }
     } catch (err) {
       console.error('Erro ao salvar lancamento:', lanc.descricao, err);
