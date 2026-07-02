@@ -1,9 +1,6 @@
 // src/handlers/faturaHandler.js
 const supabase = require('../config/supabase');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { fromBuffer } = require('pdf2pic');
-const fs = require('fs');
-const path = require('path');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const modelo = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -142,38 +139,42 @@ async function handlePdfFatura(ctx) {
 
     if (pdfBuffer.length === 0) throw new Error('PDF vazio');
 
-    // Converter PDF em imagens PNG
-    const converter = fromBuffer(pdfBuffer, {
-      density: 200,
-      format: 'png',
-      width: 1654,
-      height: 2339,
-      preserveAspectRatio: true,
+    // Upload do PDF para Gemini Files API
+    console.log('Fazendo upload do PDF para Gemini Files API...');
+    const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${process.env.GEMINI_API_KEY}`;
+
+    const formData = new FormData();
+    const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
+    formData.append('file', blob, 'fatura.pdf');
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      body: pdfBuffer,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'X-Goog-Upload-Command': 'upload, finalize',
+        'X-Goog-Upload-Header-Content-Length': pdfBuffer.length,
+        'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+      }
     });
 
-    // Converter até 5 páginas
-    const paginas = [];
-    for (let i = 1; i <= 5; i++) {
-      try {
-        const resultado = await converter(i, { responseType: 'buffer' });
-        if (resultado?.buffer && resultado.buffer.length > 0) {
-          paginas.push(resultado.buffer);
-        }
-      } catch (e) {
-        break;
-      }
+    if (!uploadResponse.ok) {
+      const errText = await uploadResponse.text();
+      throw new Error(`Erro no upload para Gemini: ${uploadResponse.status} ${errText}`);
     }
 
-    if (paginas.length === 0) throw new Error('Nao foi possivel converter o PDF em imagens');
-    console.log(`PDF convertido em ${paginas.length} paginas, tamanhos: ${paginas.map(p => p.length).join(', ')}`);
+    const uploadData = await uploadResponse.json();
+    const fileUri = uploadData?.file?.uri;
+    const fileMimeType = uploadData?.file?.mimeType || 'application/pdf';
+    console.log(`PDF enviado ao Gemini: ${fileUri}`);
 
-    // Preparar partes para o Gemini (imagens PNG)
-    const partes = paginas.map(buf => ({
-      inlineData: {
-        mimeType: 'image/png',
-        data: buf.toString('base64')
-      }
-    }));
+    if (!fileUri) throw new Error('Gemini nao retornou URI do arquivo');
+
+    // Aguardar processamento
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Preparar partes para o Gemini
+    const partes = [{ fileData: { mimeType: fileMimeType, fileUri } }];
 
     // Enviar para Gemini
     const hoje = getDataBrasilia();
