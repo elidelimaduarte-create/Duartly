@@ -142,12 +142,13 @@ async function handlePdfFatura(ctx) {
 
     if (pdfBuffer.length === 0) throw new Error('PDF vazio');
 
-    // Converter PDF em imagens
+    // Converter PDF em imagens PNG
     const converter = fromBuffer(pdfBuffer, {
-      density: 150,
-      format: 'jpeg',
-      width: 1200,
-      height: 1600,
+      density: 200,
+      format: 'png',
+      width: 1654,
+      height: 2339,
+      preserveAspectRatio: true,
     });
 
     // Converter até 5 páginas
@@ -155,19 +156,21 @@ async function handlePdfFatura(ctx) {
     for (let i = 1; i <= 5; i++) {
       try {
         const resultado = await converter(i, { responseType: 'buffer' });
-        if (resultado?.buffer) paginas.push(resultado.buffer);
+        if (resultado?.buffer && resultado.buffer.length > 0) {
+          paginas.push(resultado.buffer);
+        }
       } catch (e) {
-        break; // Sem mais páginas
+        break;
       }
     }
 
     if (paginas.length === 0) throw new Error('Nao foi possivel converter o PDF em imagens');
-    console.log(`PDF convertido em ${paginas.length} paginas`);
+    console.log(`PDF convertido em ${paginas.length} paginas, tamanhos: ${paginas.map(p => p.length).join(', ')}`);
 
-    // Preparar partes para o Gemini (imagens)
+    // Preparar partes para o Gemini (imagens PNG)
     const partes = paginas.map(buf => ({
       inlineData: {
-        mimeType: 'image/jpeg',
+        mimeType: 'image/png',
         data: buf.toString('base64')
       }
     }));
