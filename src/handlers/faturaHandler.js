@@ -170,8 +170,21 @@ async function handlePdfFatura(ctx) {
 
     if (!fileUri) throw new Error('Gemini nao retornou URI do arquivo');
 
-    // Aguardar processamento
-    await new Promise(r => setTimeout(r, 2000));
+    // Aguardar processamento e verificar status
+    console.log('Aguardando processamento do arquivo...');
+    let tentativas = 0;
+    let fileReady = false;
+    while (tentativas < 10) {
+      await new Promise(r => setTimeout(r, 3000));
+      const statusUrl = `https://generativelanguage.googleapis.com/v1beta/${uploadData.file.name}?key=${process.env.GEMINI_API_KEY}`;
+      const statusResp = await fetch(statusUrl);
+      const statusData = await statusResp.json();
+      console.log(`Status arquivo: ${statusData.state}`);
+      if (statusData.state === 'ACTIVE') { fileReady = true; break; }
+      if (statusData.state === 'FAILED') throw new Error('Gemini falhou ao processar o arquivo');
+      tentativas++;
+    }
+    if (!fileReady) throw new Error('Timeout aguardando processamento do arquivo');
 
     // Preparar partes para o Gemini
     const partes = [{ fileData: { mimeType: fileMimeType, fileUri } }];
