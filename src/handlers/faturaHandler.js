@@ -1,6 +1,9 @@
 // src/handlers/faturaHandler.js
 const supabase = require('../config/supabase');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { fromBuffer } = require('pdf2pic');
+const fs = require('fs');
+const path = require('path');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const modelo = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -129,15 +132,45 @@ async function handlePdfFatura(ctx) {
     // Baixar PDF do Telegram
     const file = await ctx.telegram.getFile(doc.file_id);
     const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-    
+
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Erro ao baixar PDF: ${response.status}`);
-    
+
     const arrayBuffer = await response.arrayBuffer();
-    if (!arrayBuffer || arrayBuffer.byteLength === 0) throw new Error('PDF vazio');
-    
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
-    console.log(`PDF recebido: ${arrayBuffer.byteLength} bytes, base64: ${base64.length} chars`);
+    const pdfBuffer = Buffer.from(arrayBuffer);
+    console.log(`PDF recebido: ${pdfBuffer.length} bytes`);
+
+    if (pdfBuffer.length === 0) throw new Error('PDF vazio');
+
+    // Converter PDF em imagens
+    const converter = fromBuffer(pdfBuffer, {
+      density: 150,
+      format: 'jpeg',
+      width: 1200,
+      height: 1600,
+    });
+
+    // Converter até 5 páginas
+    const paginas = [];
+    for (let i = 1; i <= 5; i++) {
+      try {
+        const resultado = await converter(i, { responseType: 'buffer' });
+        if (resultado?.buffer) paginas.push(resultado.buffer);
+      } catch (e) {
+        break; // Sem mais páginas
+      }
+    }
+
+    if (paginas.length === 0) throw new Error('Nao foi possivel converter o PDF em imagens');
+    console.log(`PDF convertido em ${paginas.length} paginas`);
+
+    // Preparar partes para o Gemini (imagens)
+    const partes = paginas.map(buf => ({
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: buf.toString('base64')
+      }
+    }));
 
     // Enviar para Gemini
     const hoje = getDataBrasilia();
@@ -177,7 +210,7 @@ Responda APENAS com o JSON array, sem texto adicional, sem markdown.
 `;
 
     const result = await modelo.generateContent([
-      { inlineData: { mimeType: 'application/pdf', data: base64 } },
+      ...partes,
       prompt
     ]);
 
