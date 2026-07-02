@@ -80,6 +80,7 @@ bot.command('agente',    handleAgente);
 bot.command('relatorio', handleRelatorio);
 bot.command('contas',    handleContas);
 bot.command('fatura',    handleFatura);
+bot.command('cartao',    iniciarFluxoCartao);
 bot.command('assinar',   handleAssinar);
 bot.command('convite',   handleConvite);
 bot.command('cancelar',  handleCancelar);
