@@ -171,7 +171,8 @@ async function handleMes(ctx) {
 // ============================================================
 async function handleParcelas(ctx) {
   const usuarioId = ctx.usuario.id;
-  const hoje = new Date().toISOString().split('T')[0];
+  const agora = new Date();
+  const inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1).toISOString().split('T')[0];
 
   const { data: parcelas } = await supabase
     .from('transacoes')
@@ -179,7 +180,7 @@ async function handleParcelas(ctx) {
     .eq('usuario_id', usuarioId)
     .eq('cancelado', false)
     .eq('parcelado', true)
-    .gte('data_transacao', hoje)
+    .gte('data_transacao', inicioMes)
     .order('data_transacao', { ascending: true });
 
   if (!parcelas || parcelas.length === 0) {
