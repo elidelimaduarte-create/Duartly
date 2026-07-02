@@ -129,9 +129,15 @@ async function handlePdfFatura(ctx) {
     // Baixar PDF do Telegram
     const file = await ctx.telegram.getFile(doc.file_id);
     const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    
     const response = await fetch(url);
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
+    if (!response.ok) throw new Error(`Erro ao baixar PDF: ${response.status}`);
+    
+    const arrayBuffer = await response.arrayBuffer();
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) throw new Error('PDF vazio');
+    
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    console.log(`PDF recebido: ${arrayBuffer.byteLength} bytes, base64: ${base64.length} chars`);
 
     // Enviar para Gemini
     const hoje = getDataBrasilia();
