@@ -109,18 +109,24 @@ async function perguntarPrimeiraParcela(ctx, diaVencimento) {
 // ============================================================
 async function perguntarNomeCartao(ctx) {
   await ctx.reply(
-    `💳 Qual o nome do cartão? (ex: Nubank, Itaú, Inter)\n\nOu clique em pular:`,
+    `💳 Qual o nome do cartao?`,
     {
       reply_markup: {
-        inline_keyboard: [[
-          { text: 'Nubank', callback_data: 'nome_Nubank' },
-          { text: 'Itaú', callback_data: 'nome_Itau' },
-          { text: 'Inter', callback_data: 'nome_Inter' },
-        ], [
-          { text: 'Bradesco', callback_data: 'nome_Bradesco' },
-          { text: 'C6', callback_data: 'nome_C6' },
-          { text: 'Outro', callback_data: 'nome_Outro' },
-        ]]
+        inline_keyboard: [
+          [
+            { text: 'Nubank',    callback_data: 'nome_Nubank'    },
+            { text: 'Itau',      callback_data: 'nome_Itau'      },
+            { text: 'Bradesco',  callback_data: 'nome_Bradesco'  },
+          ], [
+            { text: 'Santander', callback_data: 'nome_Santander' },
+            { text: 'Inter',     callback_data: 'nome_Inter'     },
+            { text: 'C6',        callback_data: 'nome_C6'        },
+          ], [
+            { text: 'Caixa',     callback_data: 'nome_Caixa'     },
+            { text: 'BB',        callback_data: 'nome_BB'        },
+            { text: '✏️ Digitar', callback_data: 'nome_digitar'  },
+          ]
+        ]
       }
     }
   );
@@ -229,10 +235,14 @@ async function handleCallbackCartao(ctx) {
   }
 
   // --- NOME DO CARTÃO ---
-  if (data.startsWith('nome_')) {
-    let nomeCartao = data.replace('nome_', '');
-    if (nomeCartao === 'Outro') nomeCartao = 'Cartao';
+  if (data === 'nome_digitar') {
+    salvarSessao(usuarioId, { ...sessao, etapa: 'aguardando_nome_texto' });
+    await ctx.reply('Digite o nome do cartao:');
+    return;
+  }
 
+  if (data.startsWith('nome_')) {
+    const nomeCartao = data.replace('nome_', '');
     const sessaoAtual = buscarSessao(usuarioId);
     const cartao = await criarCartao(
       usuarioId,
