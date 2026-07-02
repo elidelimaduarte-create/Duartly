@@ -257,14 +257,18 @@ async function handleDesfazer(ctx) {
 function formatarConfirmacao(classificacao, resultado) {
   const emoji = classificacao.tipo === 'receita' ? '💵' : '💸';
   const sinal = classificacao.tipo === 'receita' ? '+' : '-';
+  const categoriaTexto = classificacao.subcategoria
+    ? `${classificacao.categoria} › ${classificacao.subcategoria}`
+    : classificacao.categoria;
 
   if (resultado.parcelado) {
-    const valorParcela = (classificacao.valor / classificacao.total_parcelas).toFixed(2);
+    const valorParcela = resultado.valor_parcela
+      ? resultado.valor_parcela.toFixed(2)
+      : (classificacao.valor / classificacao.total_parcelas).toFixed(2);
     return (
       `${emoji} *${classificacao.descricao}*\n` +
       `💳 ${classificacao.total_parcelas}x de R$ ${valorParcela}\n` +
-      `📦 Total: R$ ${classificacao.valor.toFixed(2)}\n` +
-      `🏷️ ${classificacao.categoria}\n` +
+      `🏷️ ${categoriaTexto}\n` +
       `✅ ${classificacao.total_parcelas} parcelas registradas!`
     );
   }
@@ -272,7 +276,7 @@ function formatarConfirmacao(classificacao, resultado) {
   return (
     `${emoji} *${classificacao.descricao}*\n` +
     `💰 ${sinal}R$ ${classificacao.valor.toFixed(2)}\n` +
-    `🏷️ ${classificacao.categoria}\n` +
+    `🏷️ ${categoriaTexto}\n` +
     `✅ Registrado!`
   );
 }
