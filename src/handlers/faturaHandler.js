@@ -90,8 +90,14 @@ async function handleCallbackFatura(ctx) {
     return;
   }
 
-  // ── CONFIRMAR IMPORTAÇÃO
-  if (data.startsWith('fatura_confirmar_')) {
+  // ── RETRY — tentar outro PDF
+  if (data.startsWith('fatura_retry_')) {
+    const cartaoId = data.replace('fatura_retry_', '');
+    const { data: cartao } = await supabase.from('cartoes').select('*').eq('id', cartaoId).single();
+    salvarSessao(usuarioId, { etapa: 'aguardando_pdf', cartaoId, cartao });
+    await ctx.editMessageText(`💳 ${cartao?.nome || 'Cartao'} selecionado!\n\nManda o novo PDF da fatura.`);
+    return;
+  }
     const sessao = buscarSessao(usuarioId);
     if (!sessao?.lancamentos) { await ctx.editMessageText('🦙 Sessao expirada. Use /fatura novamente.'); return; }
 
@@ -315,9 +321,19 @@ Responda APENAS com o JSON array, sem texto adicional, sem markdown.
 
   } catch (err) {
     console.error('Erro ao ler fatura:', err);
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null,
-      '🦙 Erro ao processar a fatura. Verifique se o PDF esta correto e tente novamente.'
-    );
+
+    const mensagemErro = err.message?.includes('no pages') || err.message?.includes('document has no pages')
+      ? '🔒 Nao consegui ler este PDF.\n\nEle pode estar protegido por senha ou em formato incompativel.\n\nO que voce pode fazer:\n• Abra o PDF e salve uma copia sem senha\n• Tente outro arquivo da fatura\n• Use o aplicativo do banco para baixar novamente'
+      : '🦙 Erro ao processar a fatura. Verifique se o PDF esta correto e tente novamente.';
+
+    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, mensagemErro, {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🔄 Tentar outro PDF', callback_data: `fatura_retry_${sessao.cartaoId}` },
+          { text: '❌ Cancelar', callback_data: 'fatura_cancelar_import' }
+        ]]
+      }
+    });
   }
 
   return true;
