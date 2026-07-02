@@ -98,6 +98,9 @@ async function handleCallbackFatura(ctx) {
     await ctx.editMessageText(`💳 ${cartao?.nome || 'Cartao'} selecionado!\n\nManda o novo PDF da fatura.`);
     return;
   }
+
+  // ── CONFIRMAR IMPORTAÇÃO
+  if (data.startsWith('fatura_confirmar_')) {
     const sessao = buscarSessao(usuarioId);
     if (!sessao?.lancamentos) { await ctx.editMessageText('🦙 Sessao expirada. Use /fatura novamente.'); return; }
 
