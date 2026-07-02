@@ -33,42 +33,58 @@ Responda APENAS com um JSON valido neste formato exato:
   "descricao": "Nome Do Gasto Com Iniciais Maiusculas",
   "valor": 00.00,
   "tipo": "gasto" ou "receita",
-  "categoria": "uma das categorias abaixo",
+  "categoria": "uma das categorias N1 abaixo",
+  "subcategoria": "uma das subcategorias N2 abaixo ou null se nao souber",
   "parcelado": false,
   "total_parcelas": null,
   "valor_e_por_parcela": false,
   "confianca": 0.00
 }
 
-CATEGORIAS (use exatamente como escrito):
-Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario, Mercado, Delivery, Assinaturas, Investimentos, Receita, Outros
+CATEGORIAS N1 e SUBCATEGORIAS N2 (use exatamente como escrito):
+
+Alimentacao: Restaurante, Padaria / Cafe, Lanchonete, Feira / Hortifruti
+Delivery: iFood, Rappi, Uber Eats, Outro Delivery
+Mercado: Supermercado, Atacado, Minimercado
+Transporte: Gasolina Carro, Gasolina Moto, Uber / 99, Onibus / Metro, Estacionamento
+Moradia: Aluguel, Condominio, Agua / Luz / Gas, Internet / TV, Manutencao
+Saude: Farmacia, Medico / Consulta, Dentista, Exames, Academia, Plano de Saude
+Vestuario: Roupas, Calcados, Acessorios
+Assinaturas: Netflix, Amazon Prime, Disney+, HBO Max, Spotify, YouTube Premium, Outro Streaming
+Lazer: Cinema / Teatro, Viagem, Jogos, Passeios / Bares
+Educacao: Curso / Faculdade, Livros, Material Escolar
+Telefonia: Plano Celular, Recarga
+Pet: Racao, Veterinario, Pet Shop
+Beleza: Salao / Cabelereiro, Barbearia, Manicure / Pedicure, Cosmeticos / Perfume
+Familia: Escola / Creche, Fraldas / Bebe, Brinquedos, Mesada
+Impostos: IPVA, IPTU, Imposto de Renda, Multas
+Dividas: Financiamento Carro, Financiamento Moto, Emprestimo Pessoal, Consignado
+Investimentos: Poupanca, Acoes / FIIs, Criptomoedas, Renda Fixa
+Receita: Salario, 13 Salario, Ferias, PLR / Bonus, Freelance, Aluguel Recebido, FGTS
+Outros: null
 
 REGRAS DE PARCELAMENTO:
-Existem dois formatos. Identifique qual e usado:
-
 Formato A — valor e POR PARCELA: "Nx de Y" ou "N vezes de Y"
   Ex: "5x de 51,05" -> valor=51.05, total_parcelas=5, valor_e_por_parcela=true
-  Ex: "3 vezes de 100" -> valor=100.00, total_parcelas=3, valor_e_por_parcela=true
-
 Formato B — valor e o TOTAL: "Y em Nx" ou "Y parcelado em N"
   Ex: "300 em 3x" -> valor=300.00, total_parcelas=3, valor_e_por_parcela=false
-  Ex: "Nike 500 parcelado em 5" -> valor=500.00, total_parcelas=5, valor_e_por_parcela=false
 
-REGRAS DE CATEGORIAS:
-- Delivery: iFood, Rappi, Uber Eats, 99Food, James
-- Transporte: Uber, 99, taxi, onibus, metro, gasolina, combustivel, estacionamento
-- Mercado: supermercado, feira, atacado, Assai, Extra, Carrefour
-- Alimentacao: restaurante, lanchonete, padaria, cafe, almoco, jantar, pizza, hamburguer
-- Assinaturas: Spotify, Netflix, Amazon Prime, Disney+, YouTube, academia, plano, mensalidade
-- Saude: farmacia, remedio, medico, consulta, dentista, exame, academia
-- Vestuario: roupa, sapato, tenis, Nike, Adidas, camiseta, vestido, calcado
-- Receita: salario, renda, freelance, recebi, pagamento recebido, transferencia recebida
+EXEMPLOS DE CLASSIFICACAO:
+- "iFood 45" -> categoria=Delivery, subcategoria=iFood
+- "Spotify" -> categoria=Assinaturas, subcategoria=Spotify
+- "Farmacia Sao Joao 35" -> categoria=Saude, subcategoria=Farmacia
+- "Gasolina 150" -> categoria=Transporte, subcategoria=Gasolina Carro
+- "Uber 22" -> categoria=Transporte, subcategoria=Uber / 99
+- "Nike tenis 300" -> categoria=Vestuario, subcategoria=Calcados
+- "Salario" -> categoria=Receita, subcategoria=Salario
+- "Padaria 18,50" -> categoria=Alimentacao, subcategoria=Padaria / Cafe
+- "Academia 99" -> categoria=Saude, subcategoria=Academia
 
 OUTRAS REGRAS:
-- Descricao: capitalize iniciais, remova valores do nome (ex: "Nike" nao "Nike 300")
-- Valores: "18,50" = 18.50 | "1.200" = 1200.00 | "1.200,50" = 1200.50
-- Se so tiver valor sem descricao, descricao = "Gasto"
-- Se nao identificar valor, retorne valor=null
+- Descricao: capitalize iniciais, remova valores do nome
+- Valores: "18,50"=18.50 | "1.200"=1200.00 | "1.200,50"=1200.50
+- Se so tiver valor sem descricao, descricao="Gasto"
+- Se nao identificar subcategoria com certeza, retorne subcategoria=null
 - confianca: 0.0 a 1.0
 `;
 
@@ -123,16 +139,30 @@ Categorias: Alimentacao, Transporte, Moradia, Saude, Lazer, Educacao, Vestuario,
 // SALVAR TRANSAÇÃO NO SUPABASE
 // ============================================================
 async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawInput = '') {
+  // Buscar categoria N1
   const { data: categorias } = await supabase
     .from('categorias')
     .select('id, nome')
     .or(`usuario_id.eq.${usuarioId},padrao.eq.true`)
-    .ilike('nome', classificacao.categoria);
+    .ilike('nome', classificacao.categoria)
+    .eq('nivel', 1);
 
   const categoriaId = categorias?.[0]?.id || null;
 
+  // Buscar subcategoria N2 se existir
+  let subcategoriaId = null;
+  if (classificacao.subcategoria && categoriaId) {
+    const { data: subcats } = await supabase
+      .from('categorias')
+      .select('id, nome')
+      .ilike('nome', classificacao.subcategoria)
+      .eq('categoria_pai_id', categoriaId)
+      .eq('nivel', 2);
+    subcategoriaId = subcats?.[0]?.id || null;
+  }
+
   if (classificacao.parcelado && classificacao.total_parcelas > 1) {
-    return await salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput);
+    return await salvarParcelas(usuarioId, classificacao, categoriaId, subcategoriaId, origem, rawInput);
   }
 
   // Usa data de Brasília
@@ -143,6 +173,7 @@ async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawIn
     .insert({
       usuario_id:      usuarioId,
       categoria_id:    categoriaId,
+      subcategoria_id: subcategoriaId,
       descricao:       classificacao.descricao,
       valor:           classificacao.valor,
       tipo:            classificacao.tipo,
@@ -162,11 +193,9 @@ async function salvarTransacao(usuarioId, classificacao, origem = 'texto', rawIn
 // ============================================================
 // SALVAR PARCELAS
 // ============================================================
-async function salvarParcelas(usuarioId, classificacao, categoriaId, origem, rawInput) {
+async function salvarParcelas(usuarioId, classificacao, categoriaId, subcategoriaId, origem, rawInput) {
   const grupoParcela = crypto.randomUUID();
 
-  // Se valor_e_por_parcela=true, o valor já é por parcela
-  // Se false, o valor é o total e precisamos dividir
   const valorParcela = classificacao.valor_e_por_parcela
     ? parseFloat(classificacao.valor.toFixed(2))
     : parseFloat((classificacao.valor / classificacao.total_parcelas).toFixed(2));
@@ -186,14 +215,15 @@ async function salvarParcelas(usuarioId, classificacao, categoriaId, origem, raw
         descricao:      `${classificacao.descricao} (${i}/${classificacao.total_parcelas})`,
         valor:          valorParcela,
         tipo:           'gasto',
-        origem:         origem,
-        raw_input:      rawInput,
-        confianca_ia:   classificacao.confianca,
-        parcelado:      true,
-        parcela_atual:  i,
-        total_parcelas: classificacao.total_parcelas,
-        grupo_parcela:  grupoParcela,
-        data_transacao: dataTransacao.toISOString().split('T')[0],
+        origem:          origem,
+        raw_input:       rawInput,
+        confianca_ia:    classificacao.confianca,
+        parcelado:       true,
+        parcela_atual:   i,
+        total_parcelas:  classificacao.total_parcelas,
+        grupo_parcela:   grupoParcela,
+        subcategoria_id: subcategoriaId,
+        data_transacao:  dataTransacao.toISOString().split('T')[0],
       })
       .select()
       .single();
