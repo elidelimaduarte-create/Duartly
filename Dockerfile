@@ -12,9 +12,6 @@ RUN npm install
 COPY . .
 
 FROM base
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y ghostscript graphicsmagick && \
-    rm -rf /var/lib/apt/lists/*
 COPY --from=build /app /app
 EXPOSE 3000
 CMD [ "npm", "run", "start" ]
