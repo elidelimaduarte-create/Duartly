@@ -13,6 +13,7 @@ const { middlewareAcesso, handleAssinar, handleConvite, handleCancelar, handleCa
 const { handleEditar, handleCallbackEditar, handleTextoEditar } = require('./handlers/editarHandler');
 const { iniciarOnboarding, verificarOnboarding, handleCallbackOnboarding, ehUsuarioNovo } = require('./handlers/onboardingHandler');
 const { handleContas, handleCallbackContas, handleCallbackContasCategoria, handleTextoContas } = require('./handlers/contasHandler');
+const { handleFatura, handleCallbackFatura, handlePdfFatura } = require('./handlers/faturaHandler');
 const { classificarGasto, salvarTransacao, verificarMetas } = require('./services/geminiService');
 const { modeloConversa } = require('./config/gemini');
 const { iniciarAgentes, executarCuzco, executarLuna, executarInti } = require('./agents/agentes');
@@ -78,6 +79,7 @@ bot.command('metas',     handleVerMetas);
 bot.command('agente',    handleAgente);
 bot.command('relatorio', handleRelatorio);
 bot.command('contas',    handleContas);
+bot.command('fatura',    handleFatura);
 bot.command('assinar',   handleAssinar);
 bot.command('convite',   handleConvite);
 bot.command('cancelar',  handleCancelar);
@@ -171,6 +173,7 @@ bot.on('callback_query', async (ctx) => {
   if (data.startsWith('onboarding_')) { await handleCallbackOnboarding(ctx); return; }
   if (data.startsWith('contas_cat_')) { await handleCallbackContasCategoria(ctx); return; }
   if (data.startsWith('contas_'))     { await handleCallbackContas(ctx); return; }
+  if (data.startsWith('fatura_'))     { await handleCallbackFatura(ctx); return; }
   if (data === 'usar_convite')        { await ctx.answerCbQuery(); await ctx.reply('Digite seu codigo de convite:'); return; }
   if (data.startsWith('cartao_') || data.startsWith('venc_') || data.startsWith('parcela_') || data.startsWith('nome_')) {
     await handleCallbackCartao(ctx); return;
@@ -179,6 +182,9 @@ bot.on('callback_query', async (ctx) => {
 
 bot.on('photo', handleFoto);
 bot.on('voice', handleVoz);
+bot.on('document', async (ctx) => {
+  if (await handlePdfFatura(ctx)) return;
+});
 
 bot.catch((err, ctx) => {
   console.error('Erro no bot:', err);
